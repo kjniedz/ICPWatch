@@ -5,7 +5,7 @@
 import { Actor } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
 import type { Env } from "../env";
-import { now } from "../lib/format";
+import { EM_DASH, now } from "../lib/format";
 import { NNS_GOVERNANCE, getAgent, pool } from "../lib/ic";
 import { batchAll } from "./lifeline";
 
@@ -65,7 +65,7 @@ async function collectProposals(env: Env, pages: number): Promise<number> {
       const t = (v: bigint | undefined) => (v && v > 0n ? Number(v) : null);
       stmts.push(up.bind(
         Number(id), TOPICS[p.topic] ?? `Topic ${p.topic}`, body.self_describing_action[0]?.type_name[0] ?? null, STATUS[p.status] ?? "unknown",
-        (body.title[0] ?? "").replace(/—/g, " - ").slice(0, 300), body.summary.slice(0, 60000), body.url || null, p.proposer[0] ? String(p.proposer[0].id) : null,
+        (body.title[0] ?? "").replace(EM_DASH, " - ").slice(0, 300), body.summary.slice(0, 60000), body.url || null, p.proposer[0] ? String(p.proposer[0].id) : null,
         e8(tally?.yes), e8(tally?.no), e8(tally?.total), t(p.proposal_timestamp_seconds), t(p.deadline_timestamp_seconds[0]), t(p.decided_timestamp_seconds), t(p.executed_timestamp_seconds), ts,
       ));
       before = [{ id }];

@@ -8,7 +8,7 @@
 import { Actor } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
 import type { Env } from "../env";
-import { now } from "../lib/format";
+import { EM_DASH, now } from "../lib/format";
 import { getAgent, pool } from "../lib/ic";
 import { batchAll } from "./lifeline";
 
@@ -172,7 +172,7 @@ export async function collectMarkets(env: Env): Promise<MarketStats> {
     const tvl = [...a.tvlByDex.values()].reduce((x, y) => x + y, 0);
     if (!known.has(id) && tvl >= MIN_LIST_TVL && /^[a-z0-9-]+-cai$/.test(id)) {
       const dex = [...a.tvlByDex.entries()].sort((x, y) => y[1] - x[1])[0]![0];
-      stmts.push(insToken.bind(id, a.symbol.slice(0, 24), a.name.replace(/—/g, " - ").slice(0, 80), `/logo/${id}`, ts, `dex:${dex}`, ts));
+      stmts.push(insToken.bind(id, a.symbol.slice(0, 24), a.name.replace(EM_DASH, " - ").slice(0, 80), `/logo/${id}`, ts, `dex:${dex}`, ts));
       known.set(id, { id, decimals: 8, total_supply: null });
       stats.listed++;
     }

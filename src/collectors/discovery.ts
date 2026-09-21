@@ -3,7 +3,7 @@
 // Archives are re-discovered from the ledger on every run, so a newly spawned archive is watched
 // within the hour without anyone adding it.
 import type { Env } from "../env";
-import { now } from "../lib/format";
+import { EM_DASH, now } from "../lib/format";
 import { ICP_INDEX, ICP_LEDGER, ckSuites, discoverArchives, indexOf, ledgerMeta, pool, readCanisterState, totalSupply } from "../lib/ic";
 import { batchAll } from "./lifeline";
 import { SEED_TOKENS, type SeedToken } from "./seed";
@@ -56,7 +56,7 @@ export async function collectDiscovery(env: Env): Promise<DiscoveryStats> {
       tokens.set(ledger, {
         id: ledger, symbol, name: e.meta.name ?? md.get("icrc1:name")?.Text ?? symbol, decimals: Number(md.get("icrc1:decimals")?.Nat?.[0] ?? 8),
         fee: e.icrc1_fee?.[0] != null ? String(e.icrc1_fee[0]) : null, kind: "sns", snsRoot: root, logo: `/logo/${ledger}`,
-        description: e.meta.description?.replace(/—/g, " - ").slice(0, 600) ?? null, url: e.meta.url ?? null,
+        description: e.meta.description?.replace(EM_DASH, " - ").slice(0, 600) ?? null, url: e.meta.url ?? null,
         totalSupply: e.icrc1_total_supply != null ? String(BigInt(Math.round(Number(e.icrc1_total_supply)))) : null, via: "sns-aggregator",
       });
       const base = { via: "sns-aggregator", snsRoot: root, hint: "sns-root" };

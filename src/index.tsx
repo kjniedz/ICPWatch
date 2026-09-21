@@ -32,6 +32,10 @@ const page = (c: C, meta: PageMeta, body: Child, status: 200 | 404 = 200) =>
 // Edge cache for anonymous GET pages: a popular page is rendered once per 20 seconds per colo.
 app.use("*", async (c, next) => {
   const url = new URL(c.req.url);
+  if (url.hostname.startsWith("www.")) {
+    url.hostname = url.hostname.slice(4);
+    return c.redirect(url.toString(), 301);
+  }
   const cacheable = c.req.method === "GET" && !/^\/(api|admin|lifeline\/(live|alerts)|portfolio|search|logo)/.test(url.pathname) && !url.search;
   if (!cacheable || url.hostname.endsWith("workers.dev") || url.hostname === "localhost") return next();
   const cache = caches.default;

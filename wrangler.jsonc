@@ -22,6 +22,13 @@
     "crons": ["*/10 * * * *", "*/5 * * * *", "17 * * * *", "23 3 * * *"]
   },
   "observability": { "enabled": true },
+  // Certified update calls verify BLS signatures in pure JS (about 70 to 100 ms CPU each), so the
+  // collectors need the Workers Paid plan. The hourly shard uses a few seconds; this is headroom.
+  "limits": { "cpu_ms": 120000 },
+  "routes": [
+    { "pattern": "icpwatch.com", "custom_domain": true },
+    { "pattern": "www.icpwatch.com", "custom_domain": true }
+  ],
   "vars": {
     "SITE_URL": "https://icpwatch.com",
     "IC_HOST": "https://icp-api.io"

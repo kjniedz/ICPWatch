@@ -1,7 +1,7 @@
 // Minimal, safe markdown for proposal summaries. Input is untrusted: everything is HTML-escaped
 // first, then a small subset of markdown is applied. Raw HTML never passes through, and links
 // are limited to http(s).
-import { esc } from "./format";
+import { EM_DASH, esc } from "./format";
 
 function inline(s: string): string {
   return s
@@ -13,7 +13,7 @@ function inline(s: string): string {
 }
 
 export function renderMarkdown(src: string, maxChars = 40000): string {
-  const lines = esc(src.slice(0, maxChars).replace(/\r\n?/g, "\n").replace(/—/g, " - ")).split("\n");
+  const lines = esc(src.slice(0, maxChars).replace(/\r\n?/g, "\n").replace(EM_DASH, " - ")).split("\n");
   const out: string[] = [];
   let list: "ul" | "ol" | null = null;
   let para: string[] = [];

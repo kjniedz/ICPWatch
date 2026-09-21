@@ -2,6 +2,9 @@
 
 export const now = () => Math.floor(Date.now() / 1000);
 
+/** Matches em dashes in upstream text so they can be normalized to " - ". Built from the code point to keep the source clean. */
+export const EM_DASH = new RegExp(String.fromCharCode(0x2014), "g");
+
 const T = 1e12;
 
 /** Cycles in trillions, the unit the IC community thinks in. */

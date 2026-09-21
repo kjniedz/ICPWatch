@@ -9,3 +9,4 @@ public/assets/*.css
 !public/assets/.gitkeep
 worker-configuration.d.ts
 .DS_Store
+.prod-admin-token
