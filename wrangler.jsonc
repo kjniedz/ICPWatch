@@ -24,7 +24,8 @@
   "observability": { "enabled": true },
   // Certified update calls verify BLS signatures in pure JS (about 70 to 100 ms CPU each), so the
   // collectors need the Workers Paid plan. The hourly shard uses a few seconds; this is headroom.
-  "limits": { "cpu_ms": 120000 },
+  // Uncomment once the account is on Workers Paid (the Free plan rejects this key and caps CPU at 10 ms):
+  // "limits": { "cpu_ms": 120000 },
   "routes": [
     { "pattern": "icpwatch.com", "custom_domain": true },
     { "pattern": "www.icpwatch.com", "custom_domain": true }
