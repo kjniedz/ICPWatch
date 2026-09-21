@@ -3,6 +3,9 @@ import { ago, fmtBytes, fmtCompact, fmtCycles, fmtNum, fmtPct, fmtUsd, fromBase,
 import { Conf, CopyId, Crumbs, Empty, Fresh, HealthPill, TokenLogo, sourceName } from "../ui/components";
 import { CanisterTable, IncidentFeed, healthLabelFor, roleLabel, runwayCell } from "./lifeline";
 import { PoolsTable, tokenHealthLabel } from "./markets";
+import type { CanisterHistory } from "../collectors/history";
+import { HistoryTimeline } from "./history";
+import { SnsDaoSection, type SnsSectionData } from "./sns";
 
 const parse = <T,>(s: string | null | undefined, fallback: T): T => {
   if (!s) return fallback;
@@ -25,7 +28,7 @@ export interface SnsInfo {
 }
 
 export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
-  t: TokenRow; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsInfo | null;
+  t: TokenRow; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsSectionData | null;
   holders: { rows: { account: string; balance: number; share: number | null }[]; total: number | null; fetched_at: number; source: string } | null;
 }) {
   const supply = fromBase(t.total_supply, t.decimals);
@@ -112,24 +115,7 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
       {others.length ? (<><div class="sec-head"><h2>Related canisters</h2></div><CanisterTable rows={others} id="related" showToken={false} /></>) : null}
       {incidents.length ? (<><div class="sec-head"><h2>Incident history</h2></div><IncidentFeed items={incidents} /></>) : null}
 
-      {sns ? (
-        <>
-          <div class="sec-head"><h2>SNS DAO</h2><Fresh ts={sns.fetched_at} source={sns.source} staleAfter={7200} /></div>
-          <div class="card kv">
-            <div><div class="k">ICP treasury</div><div class="v">{sns.treasury_icp != null ? `${fmtCompact(sns.treasury_icp)} ICP` : "n/a"}</div></div>
-            <div><div class="k">{t.symbol} treasury</div><div class="v">{sns.treasury_token != null ? `${fmtCompact(sns.treasury_token)} ${t.symbol}` : "n/a"}</div></div>
-            <div><div class="k">Open proposals</div><div class="v">{fmtNum(sns.open_proposals)}</div></div>
-            <div><div class="k">Neurons</div><div class="v">{fmtNum(sns.neurons)}</div></div>
-          </div>
-          {sns.proposals.length ? (
-            <div class="card" style="margin-top:12px">
-              {sns.proposals.map((p) => (
-                <div class="feed-item" style="border-bottom:1px solid var(--border)"><span class="d ok"></span><div><h4>{p.title}</h4><small>#{p.id} &middot; {p.status}</small></div></div>
-              ))}
-            </div>
-          ) : null}
-        </>
-      ) : null}
+      {sns ? <SnsDaoSection sns={sns} symbol={t.symbol} /> : null}
 
       <div class="sec-head"><h2>Top holders</h2>{holders ? <Fresh ts={holders.fetched_at} source={holders.source} staleAfter={86400} /> : null}</div>
       {holders?.rows.length ? (
@@ -155,8 +141,8 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
   );
 }
 
-export function CanisterPage({ c, changes, incidents, siblings }: {
-  c: CanisterRow; changes: { ts: number; field: string; old_value: string | null; new_value: string | null }[]; incidents: IncidentRow[]; siblings: CanisterRow[];
+export function CanisterPage({ c, changes, history, incidents, siblings }: {
+  c: CanisterRow; history: CanisterHistory | null; changes: { ts: number; field: string; old_value: string | null; new_value: string | null }[]; incidents: IncidentRow[]; siblings: CanisterRow[];
 }) {
   const controllers = parse<string[]>(c.controllers, []);
   const nowTs = now();
@@ -213,21 +199,7 @@ export function CanisterPage({ c, changes, incidents, siblings }: {
           </div>
         </section>
         <section>
-          <div class="sec-head"><h2>Upgrade and controller history</h2></div>
-          {changes.length ? (
-            <div class="stack">
-              {changes.map((ch) => (
-                <div class="card feed-item">
-                  <span class="d ok"></span>
-                  <div style="min-width:0">
-                    <h4>{ch.field === "module_hash" ? "Module upgraded" : "Controllers changed"}</h4>
-                    <p class="mono" style="font-size:11px;word-break:break-all">{(ch.old_value ?? "none").slice(0, 80)} &rarr; {(ch.new_value ?? "none").slice(0, 80)}</p>
-                    <small><time datetime={isoDate(ch.ts)}>{shortDate(ch.ts)}</time> &middot; observed by ICPWatch</small>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : <div class="card"><Empty>No changes observed since ICPWatch started watching on {shortDate(c.discovered_at)}.</Empty></div>}
+          <HistoryTimeline history={history} changes={changes} discoveredAt={c.discovered_at} />
         </section>
       </div>
 

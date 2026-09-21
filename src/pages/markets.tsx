@@ -18,7 +18,7 @@ export function tokenHealthLabel(t: { worst_health: string | null; health_note: 
     case "low": return { health: "low", label: `${role} low` };
     case "risk": return { health: "risk", label: `${role} at risk` };
     case "frozen": return { health: "frozen", label: `${role} frozen` };
-    case "gone": return { health: "gone", label: `${role} deleted` };
+    case "gone": return { health: "gone", label: `${role} uninstalled` };
     case "life": return { health: "life", label: "Life support" };
     default: return { health: "unknown", label: "Balance unknown" };
   }

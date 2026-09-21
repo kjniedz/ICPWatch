@@ -1,20 +1,27 @@
 import { Hono, type Context } from "hono";
 import type { Child, FC } from "hono/jsx";
 import { channelsConfigured, hmacHex, notifyIncident, safeTargetUrl, send, sendEmail } from "./alerts/notify";
+import { accountHref, loadAccount } from "./collectors/accounts";
 import { collectDiscovery } from "./collectors/discovery";
+import { collectHistory, historyFor, historyLive } from "./collectors/history";
 import { collectWhales, holdersCached, type WhaleTransfer } from "./collectors/ledgerApi";
 import { collectLifeline, rollupLifeline } from "./collectors/lifeline";
 import { collectMarkets } from "./collectors/markets";
 import { collectNetwork } from "./collectors/network";
+import { collectSns } from "./collectors/sns";
 import * as q from "./db/queries";
 import type { Env } from "./env";
 import { now } from "./lib/format";
-import { ALERT_TYPES } from "./lib/health";
+import { ALERT_TYPES, EVENT_TYPES } from "./lib/health";
+import { enroll, lifeSupportTick, registry as lsRegistry, setCaps, setEnrollmentState, setKillSwitch, status as lsStatus } from "./lifesupport";
+import { LifeSupportRegistryPage } from "./pages/lifesupport";
 import { ICP_LEDGER, balanceOf, isCanisterId, isPrincipal, ledgerLogo, pool, probe, readCanisterState } from "./lib/ic";
 import { renderMarkdown } from "./lib/markdown";
+import { AccountNotFound, AccountPage } from "./pages/account";
 import { AlertsPage, IncidentsPage, type AlertTarget } from "./pages/alerts";
-import { ApiDocs, Changelog, Disclaimer, Docs, Faq, FormPage, HowItWorks, LifeSupportPage, NotFound, Privacy, StatusPage, Terms } from "./pages/content";
-import { CanisterPage, TokenPage, type SnsInfo } from "./pages/detail";
+import { ApiDocs, Changelog, Disclaimer, Docs, Faq, FormPage, HowItWorks, NotFound, Privacy, StatusPage, Terms } from "./pages/content";
+import { CanisterPage, TokenPage } from "./pages/detail";
+import type { SnsSectionData } from "./pages/sns";
 import { HomePage } from "./pages/home";
 import { LifelineLive, LifelinePage } from "./pages/lifeline";
 import { MarketsPage, type MarketTotals } from "./pages/markets";
@@ -36,13 +43,28 @@ app.use("*", async (c, next) => {
     url.hostname = url.hostname.slice(4);
     return c.redirect(url.toString(), 301);
   }
-  const cacheable = c.req.method === "GET" && !/^\/(api|admin|lifeline\/(live|alerts)|portfolio|search|logo)/.test(url.pathname) && !url.search;
+  const cacheable = c.req.method === "GET" && !/^\/(api|admin|lifeline\/(live|alerts)|portfolio|search|logo|account)/.test(url.pathname) && !url.search;
   if (!cacheable || url.hostname.endsWith("workers.dev") || url.hostname === "localhost") return next();
+  // Stale-while-revalidate by hand: serve whatever is cached instantly, and when it is older than
+  // 20 seconds re-render in the background. Nobody waits on D1 or JSX rendering after the first visitor.
   const cache = caches.default;
-  const hit = await cache.match(c.req.raw);
-  if (hit) return hit;
+  const key = new Request(url.toString(), { method: "GET" });
+  const refreshing = c.req.header("x-icpwatch-refresh") === "1";
+  if (!refreshing) {
+    const hit = await cache.match(key);
+    if (hit) {
+      const age = now() - Number(hit.headers.get("x-rendered-at") ?? 0);
+      if (age > 20) c.executionCtx.waitUntil(fetch(url.toString(), { headers: { "x-icpwatch-refresh": "1" } }).then((r) => r.arrayBuffer()).catch(() => undefined));
+      return hit;
+    }
+  }
   await next();
-  if (c.res.status === 200) c.executionCtx.waitUntil(cache.put(c.req.raw, c.res.clone()));
+  if (c.res.status === 200) {
+    const copy = new Response(c.res.clone().body, c.res);
+    copy.headers.set("x-rendered-at", String(now()));
+    copy.headers.set("cache-control", "public, max-age=0, s-maxage=600");
+    c.executionCtx.waitUntil(cache.put(key, copy));
+  }
 });
 
 // ---- pages: home + lifeline -------------------------------------------------------------------------
@@ -78,14 +100,10 @@ app.get("/lifeline/incidents", async (c) =>
   page(c, { title: "Incidents", path: "/lifeline/incidents", section: "lifeline", description: "Every incident Lifeline has opened on watched canisters: low cycles, frozen, approaching deletion, and burn-rate anomalies." }, <IncidentsPage items={await q.recentIncidents(c.env.DB, 100)} />),
 );
 
-app.get("/lifeline/life-support", async (c) => {
-  const db = c.env.DB;
-  const [items, frozen] = await Promise.all([
-    q.lifeSupportList(db),
-    db.prepare("SELECT c.id, c.label, c.delete_at, c.cycles, t.symbol token_symbol FROM canisters c LEFT JOIN tokens t ON t.id = c.token_id WHERE c.health = 'frozen' ORDER BY (c.delete_at IS NULL), c.delete_at LIMIT 50").all<{ id: string; label: string; delete_at: number | null; cycles: number | null; token_symbol: string | null }>(),
-  ]);
-  return page(c, { title: "On Life Support: adoption registry", path: "/lifeline/life-support", section: "lifeline", description: "Abandoned Internet Computer canisters preserved from deletion at minimum cost, listed so projects and communities can adopt and revive them." }, <LifeSupportPage items={items} frozen={frozen.results} adopt={c.req.query("adopt") ?? null} />);
-});
+app.get("/lifeline/life-support", async (c) =>
+  page(c, { title: "On Life Support: adoption registry", path: "/lifeline/life-support", section: "lifeline", description: "Abandoned Internet Computer canisters preserved from deletion at minimum cost, listed so projects and communities can adopt and revive them." },
+    <LifeSupportRegistryPage data={await lsRegistry(c.env)} adopt={c.req.query("adopt") ?? null} />),
+);
 
 // ---- alerts ---------------------------------------------------------------------------------------------
 
@@ -128,7 +146,7 @@ app.post("/lifeline/alerts", async (c) => {
   if (!target) return fail("That is not a token symbol, ledger id, or canister id we can resolve.");
   const channel = String(form.channel ?? "");
   let address = String(form.target ?? "").trim();
-  const types = ([] as string[]).concat((form.types as string | string[]) ?? []).filter((t) => (ALERT_TYPES as string[]).includes(t));
+  const types = ([] as string[]).concat((form.types as string | string[]) ?? []).filter((t) => (ALERT_TYPES as string[]).includes(t) || (EVENT_TYPES as string[]).includes(t));
   if (!types.length) return fail("Pick at least one alert type.");
   if (channel === "email") {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(address) || address.length > 200) return fail("That email address does not look right.");
@@ -192,14 +210,14 @@ app.get("/canister/:id", async (c) => {
   const can = await q.getCanister(db, id);
   if (!can) {
     if (!isCanisterId(id)) return page(c, { title: "Not found", path: `/canister/${id}`, section: "lifeline", description: "Not found", noindex: true }, <NotFound what="That is not a valid canister id." />, 404);
-    const [state, pr] = await Promise.all([readCanisterState(c.env.IC_HOST, id).catch(() => null), probe(c.env.IC_HOST, id).catch(() => null)]);
-    return page(c, { title: `Canister ${id}`, path: `/canister/${id}`, section: "lifeline", description: `Live lookup of canister ${id}: controllers, module hash, subnet, and liveness.`, noindex: true }, <UnwatchedCanisterPage id={id} state={state} probe={pr} />);
+    const [state, pr, liveHistory] = await Promise.all([readCanisterState(c.env.IC_HOST, id).catch(() => null), probe(c.env.IC_HOST, id).catch(() => null), historyLive(c.env.IC_HOST, id).catch(() => null)]);
+    return page(c, { title: `Canister ${id}`, path: `/canister/${id}`, section: "lifeline", description: `Live lookup of canister ${id}: controllers, module hash, subnet, and liveness.`, noindex: true }, <UnwatchedCanisterPage id={id} state={state} probe={pr} history={liveHistory} />);
   }
-  const [changes, incidents, siblings] = await Promise.all([q.canisterChanges(db, id), q.recentIncidents(db, 10, [id]), can.token_id ? q.canistersForToken(db, can.token_id) : Promise.resolve([])]);
+  const [changes, incidents, siblings, history] = await Promise.all([q.canisterChanges(db, id), q.recentIncidents(db, 10, [id]), can.token_id ? q.canistersForToken(db, can.token_id) : Promise.resolve([]), historyFor(db, id).catch(() => null)]);
   return page(c, {
     title: `${can.label} canister health`, path: `/canister/${id}`, section: "lifeline", chart: true,
     description: `Cycle balance, burn rate, freeze runway, controllers, and upgrade history for ${can.label} (${id}) on the Internet Computer.`,
-  }, <CanisterPage c={can} changes={changes} incidents={incidents} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
+  }, <CanisterPage c={can} changes={changes} history={history} incidents={incidents} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
 });
 
 app.get("/token/:id", async (c) => {
@@ -209,7 +227,7 @@ app.get("/token/:id", async (c) => {
   if (t.id !== c.req.param("id")) return c.redirect(`/token/${t.id}`, 301);
   const [m, canisters, pools, holders, sns] = await Promise.all([
     q.getMarket(db, t.id), q.canistersForToken(db, t.id), q.poolsForToken(db, t.id), t.id === ICP_LEDGER ? Promise.resolve(null) : holdersCached(c.env, t.id, t.decimals).catch(() => null),
-    q.kvGet<SnsInfo>(db, `sns:${t.id}`),
+    q.kvGet<SnsSectionData>(db, `sns:${t.id}`),
   ]);
   const incidents = await q.recentIncidents(db, 8, canisters.map((x) => x.id));
   return page(c, {
@@ -299,6 +317,15 @@ app.get("/proposal/:id", async (c) => {
   return page(c, { title: `Proposal ${p.id}: ${p.title ?? ""}`.slice(0, 110), path: `/proposal/${p.id}`, section: "network", description: `NNS proposal ${p.id}: ${p.title ?? ""}. Topic, voting progress, outcome, and the full summary.`.slice(0, 250) }, <ProposalPage p={p} summaryHtml={renderMarkdown(p.summary ?? "")} />);
 });
 
+// ---- accounts -------------------------------------------------------------------------------------------
+
+app.get("/account/:id", async (c) => {
+  const id = c.req.param("id");
+  const a = await loadAccount(c.env, id, { start: c.req.query("start"), token: c.req.query("token"), tokenStart: c.req.query("tstart") });
+  const meta: PageMeta = { title: `Account ${id.slice(0, 16)}`, path: `/account/${id}`, section: "network", description: "Balances and recent transactions for this Internet Computer account, read from the ledgers and index canisters.", noindex: true };
+  return a ? page(c, meta, <AccountPage a={a} />) : page(c, meta, <AccountNotFound id={id} />, 404);
+});
+
 // ---- search ---------------------------------------------------------------------------------------------
 
 async function search(env: Env, raw: string): Promise<{ hits: SearchHit[]; exact: string | null; note: string | null }> {
@@ -319,15 +346,13 @@ async function search(env: Env, raw: string): Promise<{ hits: SearchHit[]; exact
   else if (isCanisterId(term)) {
     exact = idx.tokens.find((t) => t.id === term) ? `/token/${term}` : `/canister/${term}`;
     if (!hits.length) hits.push({ type: "Canister", title: "Live canister lookup", sub: term, href: `/canister/${term}` });
-  } else if (isPrincipal(term)) {
-    if (idx.subnets.some((x) => x.id === term)) exact = `/subnet/${term}`;
-    else {
-      hits.unshift({ type: "Principal", title: "Portfolio for this principal", sub: term, href: `/portfolio?p=${term}` });
-      note = "This is a user principal. Neurons are private on the IC, but token balances are public.";
-    }
+  } else if (isPrincipal(term) && idx.subnets.some((x) => x.id === term)) {
+    exact = `/subnet/${term}`;
+  } else if (accountHref(term)) {
+    exact = accountHref(term);
   } else if (/^[0-9a-f]{64}$/i.test(term)) {
-    note = "This looks like an ICP account identifier or a transaction hash. Account pages are coming with the Network indexer. For now you can view it on the official dashboard.";
-    hits.unshift({ type: "Account", title: "Open on dashboard.internetcomputer.org", sub: term, href: `https://dashboard.internetcomputer.org/account/${term}` });
+    note = "This 64 character hex string is not a valid account identifier (its checksum does not match), so it is probably a transaction or module hash. You can look it up on the official dashboard.";
+    hits.unshift({ type: "Hash", title: "Open on dashboard.internetcomputer.org", sub: term, href: `https://dashboard.internetcomputer.org/transaction/${term}` });
   }
   return { hits, exact, note };
 }
@@ -494,7 +519,29 @@ const JOBS = {
   network: (env: Env) => collectNetwork(env),
   whales: (env: Env) => collectWhales(env),
   rollup: (env: Env) => rollupLifeline(env),
+  sns: (env: Env) => collectSns(env),
+  // Dry run unless explicitly enabled. Even then the engine's own gate (identity, kill switch, caps) decides.
+  "life-support": (env: Env) => lifeSupportTick(env, { dryRun: env.LIFE_SUPPORT_ENABLED !== "true" }),
+  history: (env: Env) => runHistory(env),
 } satisfies Record<string, (env: Env) => Promise<unknown>>;
+
+/**
+ * Upgrade and controller history from on-chain canister_info, plus the security events it yields.
+ * A controller or module change is a point-in-time event, not a condition that later clears, so it is
+ * stored as an already-closed incident and notified exactly once.
+ */
+async function runHistory(env: Env) {
+  const stats = await collectHistory(env, { limit: 150 });
+  let notified = 0;
+  for (const ev of stats.events) {
+    const can = await q.getCanister(env.DB, ev.canister_id);
+    if (!can) continue;
+    const row = await env.DB.prepare("INSERT INTO incidents (canister_id, type, state, severity, title, detail, data, opened_at, resolved_at) VALUES (?, ?, 'resolved', ?, ?, ?, ?, ?, ?) RETURNING id")
+      .bind(ev.canister_id, ev.type, ev.type === "controller_change" ? "critical" : "warn", `${ev.title}: ${can.label}`, ev.detail, JSON.stringify(ev), ev.ts, ev.ts).first<{ id: number }>();
+    if (row) notified += await notifyIncident(env, { incidentId: row.id, canister: can, type: ev.type, kind: "fired", title: `${ev.title}: ${can.label}`, detail: ev.detail, severity: "warn" }).catch(() => 0);
+  }
+  return { checked: stats.checked, inserted: stats.inserted, errors: stats.errors, events: stats.events.length, notified };
+}
 
 async function runJob(env: Env, job: keyof typeof JOBS): Promise<{ ok: boolean; stats?: unknown; error?: string }> {
   const started = Date.now();
@@ -517,6 +564,21 @@ app.post("/admin/run/:job", async (c) => {
   const job = c.req.param("job") as keyof typeof JOBS;
   if (!(job in JOBS)) return c.json({ error: "unknown job", jobs: Object.keys(JOBS) }, 400);
   return c.json(await runJob(c.env, job));
+});
+
+// Life support administration. Everything here is bearer-authed, logged by the engine, and safe by default.
+app.get("/admin/life-support/status", async (c) => (authed(c) ? c.json(await lsStatus(c.env)) : c.json({ error: "unauthorized" }, 401)));
+app.post("/admin/life-support/:action", async (c) => {
+  if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  switch (c.req.param("action")) {
+    case "tick": return c.json(await lifeSupportTick(c.env, { dryRun: body.dryRun !== false }));
+    case "enroll": return c.json(await enroll(c.env, { canisterId: String(body.canisterId ?? ""), what: String(body.what ?? ""), story: body.story ? String(body.story) : null, budgetCycles: Number(body.budgetCycles ?? 0), who: "admin" }));
+    case "state": return c.json(await setEnrollmentState(c.env, { canisterId: String(body.canisterId ?? ""), state: body.state as "active" | "paused" | "adopted", adoptedBy: body.adoptedBy ? String(body.adoptedBy) : null, who: "admin" }));
+    case "kill-switch": return c.json(await setKillSwitch(c.env, body.on !== false, "admin", body.reason ? String(body.reason) : undefined));
+    case "caps": return c.json(await setCaps(c.env, body as Parameters<typeof setCaps>[1], "admin"));
+    default: return c.json({ error: "unknown action" }, 400);
+  }
 });
 
 /** Fire a simulated incident through the real notification path, then resolve it. Marked simulated everywhere. */
@@ -575,7 +637,7 @@ export default {
           break;
         }
         case "*/5 * * * *": await runJob(env, "markets"); break;
-        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); break;
+        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); break;
       }
     };

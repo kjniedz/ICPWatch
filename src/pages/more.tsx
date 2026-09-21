@@ -3,6 +3,8 @@ import type { Kv, PoolRow, TokenMarketRow, TokenRow } from "../db/queries";
 import { ago, fmtCompact, fmtNum, fmtUsd, isoDate, shortDate } from "../lib/format";
 import { Conf, CopyId, Crumbs, Empty, Fresh, HealthPill, TokenLogo } from "../ui/components";
 import { PoolsTable, TokenTable } from "./markets";
+import type { CanisterHistory } from "../collectors/history";
+import { HistoryTimeline } from "./history";
 
 export function PoolsPage({ pools, fetchedAt }: { pools: PoolRow[]; fetchedAt: number | null }) {
   return (
@@ -183,8 +185,8 @@ export function SearchPage({ q, hits, note }: { q: string; hits: SearchHit[]; no
   );
 }
 
-export function UnwatchedCanisterPage({ id, state, probe }: {
-  id: string; state: { controllers: string[] | null; moduleHash: string | null; subnetId: string | null } | null; probe: { runStatus: string; code: string | null } | null;
+export function UnwatchedCanisterPage({ id, state, probe, history }: {
+  id: string; history: CanisterHistory | null; state: { controllers: string[] | null; moduleHash: string | null; subnetId: string | null } | null; probe: { runStatus: string; code: string | null } | null;
 }) {
   return (
     <div class="wrap page narrow">
@@ -204,6 +206,7 @@ export function UnwatchedCanisterPage({ id, state, probe }: {
         {state?.controllers?.length ? state.controllers.map((p) => <div class="mono" style="font-size:12px;padding:3px 0">{p}</div>) : <span class="muted">{state?.controllers ? "None. This canister is blackholed." : "Could not be read."}</span>}
         <div class="src" style="margin-top:8px">read_state, certified by the subnet</div>
       </div>
+      {history ? <HistoryTimeline history={history} /> : null}
       <form method="post" action="/lifeline/watch" style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap">
         <input type="hidden" name="id" value={id} />
         <button class="btn btn-primary" type="submit">Start watching this canister</button>

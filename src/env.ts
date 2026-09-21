@@ -12,4 +12,9 @@ export interface Env {
   /** From address for alert email, e.g. "ICPWatch Lifeline <alerts@icpwatch.com>". */
   EMAIL_FROM?: string;
   TELEGRAM_BOT_TOKEN?: string;
+  /** Life support spends real ICP. It only goes live when this is exactly "true" AND an identity is set AND the DB kill switch is released. */
+  LIFE_SUPPORT_ENABLED?: string;
+  /** 32 byte Ed25519 seed (hex or base64) of the funding identity. */
+  LIFE_SUPPORT_IDENTITY?: string;
+  LIFE_SUPPORT_ALERT_WEBHOOK?: string;
 }

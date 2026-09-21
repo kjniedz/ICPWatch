@@ -52,6 +52,8 @@ export function AlertsPage({ target, channels, result }: {
             <label class="check"><input type="checkbox" name="types" value="frozen" checked /><span><b>Frozen</b>The canister started rejecting calls.</span></label>
             <label class="check"><input type="checkbox" name="types" value="approaching_deletion" checked /><span><b>Approaching deletion</b>Frozen with under 14 days of storage cost left.</span></label>
             <label class="check"><input type="checkbox" name="types" value="burn_anomaly" checked /><span><b>Burn-rate anomaly</b>A spike against the canister's own rolling baseline.</span></label>
+            <label class="check"><input type="checkbox" name="types" value="controller_change" checked /><span><b>Controllers changed</b>Someone was added to or removed from the canister's controllers. The ICP version of "admin key changed".</span></label>
+            <label class="check"><input type="checkbox" name="types" value="module_change" /><span><b>Code changed</b>The canister was upgraded, reinstalled, or uninstalled. Routine for active projects, so off by default.</span></label>
           </div>
         </div>
 

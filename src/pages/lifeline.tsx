@@ -109,7 +109,8 @@ export function IncidentFeed({ items }: { items: IncidentRow[] }) {
   return (
     <div class="stack">
       {items.map((i) => {
-        const resolved = i.state === "resolved";
+        // Controller and code changes are point-in-time events: stored closed, never shown as "resolved".
+        const resolved = i.state === "resolved" && i.type !== "controller_change" && i.type !== "module_change";
         return (
           <a class="card feed-item" href={`/canister/${i.canister_id}`}>
             <span class={`d ${resolved ? "ok" : (incidentDot[i.type] ?? "risk")}`} aria-hidden="true"></span>

@@ -130,6 +130,17 @@ export const ApiDocs = () => (
 
 export const Changelog = () => (
   <Prose title="Changelog">
+    <h2>0.2.0, September 2026</h2>
+    <ul>
+      <li>Lifeline: every token as one group (ledger, index, archives) with its worst state, and the long tail of DEX tokens is now watched too. Dozens of token ledgers turned out to be uninstalled while their pools are still listed.</li>
+      <li>Own block indexer: holders, concentration, large transfers, and daily activity replayed from ledger and archive blocks, with honest progress while a ledger is still syncing.</li>
+      <li>Account pages for any principal or ICP account identifier: balances across ledgers and recent transactions, read from the ledgers and index canisters.</li>
+      <li>Upgrade and controller history for every watched canister from the on-chain change log, plus two new alert types: controllers changed, and code changed.</li>
+      <li>SNS DAO analytics on token pages: treasury in ICP, tokens, and USD, how much of the raised ICP has left, neurons, turnout, and proposal outcomes.</li>
+      <li>Network and subnet charts: block rate, cycle burn, messages, and canister counts over time.</li>
+      <li>Life support engine with a dry-run mode, spend caps, a kill switch, and an append-only audit log. It is switched off until funded and enabled.</li>
+      <li>Burn estimates now need six hours of readings before they drive projections or alerts.</li>
+    </ul>
     <h2>0.1.0, September 2026</h2>
     <ul>
       <li>Lifeline: live canister health for ICP, ck tokens, and every SNS, with ledger, index, and archives grouped per token.</li>

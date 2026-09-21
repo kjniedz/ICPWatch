@@ -226,6 +226,15 @@ export const newestTokens = (db: D1Database, limit = 50) =>
   all<TokenRow>(db.prepare("SELECT * FROM tokens WHERE hidden = 0 ORDER BY listed_at DESC, symbol ASC LIMIT ?").bind(limit));
 
 export async function searchIndex(db: D1Database, q: string) {
+  // D1 rejects LIKE patterns over 50 bytes. Anything that long is an id, so match it exactly instead.
+  if (q.length > 46) {
+    const [tokens, canisters, subnets] = await db.batch<Record<string, string | number | null>>([
+      db.prepare("SELECT id, symbol, name FROM tokens WHERE hidden = 0 AND id = ?").bind(q),
+      db.prepare("SELECT id, label, role FROM canisters WHERE id = ?").bind(q),
+      db.prepare("SELECT id, type, label FROM subnets WHERE id = ?").bind(q),
+    ]);
+    return { tokens: tokens!.results, canisters: canisters!.results, proposals: [] as Record<string, string | number | null>[], subnets: subnets!.results };
+  }
   const like = `%${q.replace(/[%_]/g, "")}%`;
   const [tokens, canisters, proposals, subnets] = await db.batch<Record<string, string | number | null>>([
     db.prepare("SELECT id, symbol, name FROM tokens WHERE hidden = 0 AND (symbol LIKE ?1 OR name LIKE ?1 OR id LIKE ?1) ORDER BY (symbol = ?2 COLLATE NOCASE) DESC, LENGTH(symbol) ASC LIMIT 6").bind(like, q),
