@@ -1,0 +1,11 @@
+node_modules
+.wrangler
+.dev.vars
+.env*
+!.env.example
+public/assets/*.js
+public/assets/*.js.map
+public/assets/*.css
+!public/assets/.gitkeep
+worker-configuration.d.ts
+.DS_Store

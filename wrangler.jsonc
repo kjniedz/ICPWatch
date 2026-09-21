@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "icpwatch",
+  "account_id": "4443bdbbbe27478e0ab205bc81a954ad",
+  "main": "src/index.tsx",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "icpwatch",
+      "database_id": "823f59d4-f4f5-4a1d-8f8c-8029e890f0c7",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    // */10: Lifeline collect + alert evaluation. */5: markets. 17 * * * *: discovery + network. 23 3 * * *: rollups.
+    "crons": ["*/10 * * * *", "*/5 * * * *", "17 * * * *", "23 3 * * *"]
+  },
+  "observability": { "enabled": true },
+  "vars": {
+    "SITE_URL": "https://icpwatch.com",
+    "IC_HOST": "https://icp-api.io"
+  }
+}

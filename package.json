@@ -1,0 +1,31 @@
+{
+  "name": "icpwatch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ICPWatch: markets, network activity, and canister health for the Internet Computer.",
+  "scripts": {
+    "dev": "npm run build:client && wrangler dev",
+    "build:client": "node scripts/build-client.mjs",
+    "watch:client": "node scripts/build-client.mjs --watch",
+    "deploy": "npm run build:client && wrangler deploy",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p client",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply icpwatch --local",
+    "db:migrate:remote": "wrangler d1 migrations apply icpwatch --remote",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@icp-sdk/core": "^6.1.0",
+    "hono": "^4.13.8"
+  },
+  "devDependencies": {
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/poppins": "^5.3.0",
+    "esbuild": "^0.28.2",
+    "lightweight-charts": "^5.2.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.136.0"
+  }
+}
