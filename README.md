@@ -92,7 +92,15 @@ Discord and webhook alerts need no secrets.
 
 ## Cost and safety
 
-Nothing in this repo spends ICP or cycles. Anonymous update calls are paid for by the target canister (a status read or an ingress fee, fractions of a cent). Phase 4 (life support top-ups) is the first thing that will spend, and it is not built: only its tables and the public registry page exist.
+Anonymous update calls are paid for by the target canister (a status read or an ingress fee, fractions of a cent). The block indexer writes roughly 19M D1 rows for the initial backfill and about 4M a month after that, inside the 50M a month the Workers Paid plan includes.
+
+**Life support is the only thing that can spend money, and it is off by default.** The cron runs it as a dry run. It goes live only when `LIFE_SUPPORT_ENABLED` is exactly `"true"`, a funding identity secret is set, and the kill switch in the database has been released. Caps, budgets, one attempt per canister per day, and the append-only audit tables are enforced by the database itself. No real top-up has been executed yet: the signed transfer and `notify_top_up` are untested without funds. See `docs/LIFE_SUPPORT.md` for the math, the two year simulation, and the go-live checklist.
+
+## What else is in here
+
+- `src/indexer/`: own ICRC block indexer (balances, holders, concentration, large transfers, daily activity). Token pages use it once a ledger is fully replayed and fall back to the labeled third-party source until then. The ICP ledger is not indexed yet.
+- `src/collectors/sns.ts`, `history.ts`, `accounts.ts`: SNS DAO analytics, upgrade and controller history from on-chain `canister_info` (which also feeds the `controller_change` and `module_change` alerts), and on-demand account pages.
+- `docs/ROADMAP.md`: the tiered product roadmap.
 
 ## Data sources and honesty rules
 
