@@ -122,6 +122,14 @@ export async function collectLifeline(env: Env, opts: { full?: boolean } = {}): 
       stats.controller++;
     } else stats.errors++;
   });
+  // The blackhole returns no idle burn, so freezing cannot be derived from the balance, and it says
+  // "running" for frozen canisters. Custom ledgers without http_request also slip past the metrics
+  // probe (method-not-found looks the same frozen or not). So: probe a method that exists.
+  const bhProbes = await pool(bhTargets, 5, (c) => (probeMethod[c.role] ? probeQuery(host, c.id, probeMethod[c.role]!) : probe(host, c.id)));
+  bhProbes.forEach((r, i) => {
+    const reading = readings.get(bhTargets[i]!.id);
+    if (r.status === "fulfilled" && reading && r.value.runStatus !== "running" && r.value.runStatus !== "unknown") reading.runStatus = r.value.runStatus;
+  });
 
   // 3. Probes for everything in this shard that produced no balance. Ledger-family canisters get a
   // free query probe; anything else gets the universal update-call probe.
