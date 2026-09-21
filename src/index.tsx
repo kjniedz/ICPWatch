@@ -58,9 +58,9 @@ app.get("/", async (c) => {
 });
 
 async function lifelineData(db: D1Database) {
-  const [summary, rows, incidents, lifeSupport] = await Promise.all([q.lifelineSummary(db, now()), q.listCanisters(db), q.recentIncidents(db, 6), q.lifeSupportList(db)]);
+  const [summary, rows, incidents, lifeSupport, tokens] = await Promise.all([q.lifelineSummary(db, now()), q.listCanisters(db), q.recentIncidents(db, 6), q.lifeSupportList(db), q.tokenHealth(db)]);
   const version = `${summary.last_measured_at ?? 0}-${summary.watched}-${incidents[0]?.id ?? 0}-${incidents[0]?.state ?? ""}`;
-  return { summary, rows, incidents, lifeSupport, version };
+  return { summary, rows, incidents, lifeSupport, tokens, version };
 }
 
 app.get("/lifeline", async (c) => {
@@ -277,7 +277,7 @@ app.get("/portfolio", async (c) => {
 
 app.get("/network", async (c) => {
   const [stats, subnets, proposals] = await Promise.all([q.kvGet<NetworkStats>(c.env.DB, "network:stats"), q.listSubnets(c.env.DB), q.listProposals(c.env.DB, 6)]);
-  return page(c, { title: "Internet Computer network explorer", path: "/network", section: "network", description: "One fast search box over canisters, principals, tokens, subnets, and proposals, with subnets ranked by cycle burn and governance you can read." }, <NetworkPage stats={stats} subnets={subnets} proposals={proposals} />);
+  return page(c, { title: "Internet Computer network explorer", path: "/network", section: "network", chart: true, description: "One fast search box over canisters, principals, tokens, subnets, and proposals, with subnets ranked by cycle burn and governance you can read." }, <NetworkPage stats={stats} subnets={subnets} proposals={proposals} />);
 });
 app.get("/network/subnets", async (c) => {
   const subnets = await q.listSubnets(c.env.DB);
@@ -287,7 +287,7 @@ app.get("/subnet/:id", async (c) => {
   const s = await q.getSubnet(c.env.DB, c.req.param("id"));
   if (!s) return page(c, { title: "Subnet not found", path: c.req.path, section: "network", description: "Not found", noindex: true }, <NotFound what="That subnet is not known." />, 404);
   const watched = (await c.env.DB.prepare("SELECT id, label, burn_per_day, cycles, health FROM canisters WHERE subnet_id = ? ORDER BY (burn_per_day IS NULL), burn_per_day DESC LIMIT 25").bind(s.id).all<{ id: string; label: string; burn_per_day: number | null; cycles: number | null; health: string }>()).results;
-  return page(c, { title: `Subnet ${s.id.slice(0, 11)}`, path: `/subnet/${s.id}`, section: "network", description: `Internet Computer subnet ${s.id}: type, nodes, canisters, cycle burn, block rate, and the top measured canisters by burn.` }, <SubnetPage s={s} watched={watched} />);
+  return page(c, { title: `Subnet ${s.id.slice(0, 11)}`, path: `/subnet/${s.id}`, section: "network", chart: true, description: `Internet Computer subnet ${s.id}: type, nodes, canisters, cycle burn, block rate, and the top measured canisters by burn.` }, <SubnetPage s={s} watched={watched} />);
 });
 app.get("/network/proposals", async (c) => {
   const status = c.req.query("status") ?? "";
@@ -445,6 +445,36 @@ api.get("/token/:id/prices", async (c) => {
 api.get("/pools", async (c) => c.json({ pools: await q.topPools(c.env.DB, 300) }));
 api.get("/incidents", async (c) => c.json({ incidents: await q.recentIncidents(c.env.DB, 100) }));
 api.get("/network/summary", async (c) => c.json(await q.kvGet(c.env.DB, "network:stats")));
+// Network time series. Rates have no on-chain source, so this proxies the IC public API (third party)
+// and caches each range for ten minutes. Optional ?subnet=<id> scopes a metric to one subnet.
+const SERIES: Record<string, { path: string; unit: string; scale?: number; sum?: boolean }> = {
+  blocks: { path: "/v3/metrics/block-rate", unit: "rate" },
+  burn: { path: "/v3/metrics/cycle-burn-rate", unit: "cycles", scale: 86400 },
+  messages: { path: "/v3/metrics/message-execution-rate", unit: "rate" },
+  canisters: { path: "/v3/metrics/registered-canisters-count", unit: "count", sum: true },
+  memory: { path: "/v3/metrics/ic-memory-usage", unit: "bytes" },
+};
+const STEPS: Record<string, number> = { "24h": 1800, "7d": 7200, "30d": 21600, "90d": 86400, "1y": 259200 };
+api.get("/network/series", async (c) => {
+  const metric = SERIES[c.req.query("metric") ?? ""];
+  const key = c.req.query("range") ?? "30d";
+  const subnet = c.req.query("subnet");
+  if (!metric || !RANGES[key] || (subnet && !isPrincipal(subnet))) return c.json({ error: "unknown metric or range", metrics: Object.keys(SERIES) }, 400);
+  const cache = caches.default;
+  const hit = await cache.match(c.req.raw);
+  if (hit) return new Response(hit.body, hit); // re-wrap: cached responses have immutable headers
+  const end = Math.floor(now() / 600) * 600;
+  const res = await fetch(`https://ic-api.internetcomputer.org/api${metric.path}?start=${end - RANGES[key]!}&end=${end}&step=${STEPS[key]}${subnet ? `&subnet=${subnet}` : ""}`);
+  if (!res.ok) return c.json({ unit: metric.unit, source: "IC public API", points: [] }, 200, { "cache-control": "public, max-age=60" });
+  const body = (await res.json()) as Record<string, unknown>;
+  const series = Object.values(body).filter((v): v is [number, string][] => Array.isArray(v) && Array.isArray(v[0]));
+  const byTs = new Map<number, number>();
+  for (const s of metric.sum ? series : series.slice(0, 1)) for (const [t, v] of s) byTs.set(t, (byTs.get(t) ?? 0) + Number(v) * (metric.scale ?? 1));
+  const points = [...byTs.entries()].filter(([, v]) => Number.isFinite(v)).sort((a, b) => a[0] - b[0]).map(([t, v]) => ({ t, v }));
+  const out = c.json({ unit: metric.unit, source: "IC public API (ic-api.internetcomputer.org)", points }, 200, { "cache-control": "public, max-age=600" });
+  c.executionCtx.waitUntil(cache.put(c.req.raw, out.clone()));
+  return out;
+});
 api.get("/subnets", async (c) => c.json({ subnets: await q.listSubnets(c.env.DB) }));
 api.get("/proposals", async (c) => c.json({ proposals: (await q.listProposals(c.env.DB, 100, c.req.query("status") || undefined)).map(({ summary: _s, ...p }) => p) }));
 api.get("/search", async (c) => {

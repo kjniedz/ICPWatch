@@ -95,7 +95,7 @@ export function classify(f: CanisterFacts, p: Projection): HealthState {
  * Top-ups (balance going up) are excluded along with the interval they happened in,
  * so a refill never shows up as negative burn or hides real burn.
  */
-export function burnRate(samples: Sample[], fromTs: number, toTs: number): number | null {
+export function burnRate(samples: Sample[], fromTs: number, toTs: number, minCoverageS = 1800): number | null {
   let burned = 0;
   let covered = 0;
   for (let i = 1; i < samples.length; i++) {
@@ -109,7 +109,9 @@ export function burnRate(samples: Sample[], fromTs: number, toTs: number): numbe
     burned += delta;
     covered += dt;
   }
-  if (covered < 1800) return null; // need at least 30 minutes of clean coverage
+  // Short windows turn a tiny balance change into a huge daily rate (a timer firing, an archive
+  // flush), so callers that project or alert ask for hours of clean coverage, not minutes.
+  if (covered < minCoverageS) return null;
   return (burned / covered) * DAY;
 }
 

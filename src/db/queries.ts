@@ -146,7 +146,29 @@ export const listTokens = (db: D1Database) =>
       LEFT JOIN h ON h.token_id = t.id
       LEFT JOIN w ON w.token_id = t.id AND w.rn = 1
       WHERE t.hidden = 0
-      ORDER BY (m.mcap_usd IS NULL), m.mcap_usd DESC, t.symbol ASC`),
+      ORDER BY (m.mcap_usd IS NULL), m.mcap_usd DESC, (m.tvl_usd IS NULL), m.tvl_usd DESC, t.symbol ASC`),
+  );
+
+export interface TokenHealthRow {
+  id: string; symbol: string; name: string; logo: string | null; kind: string; canisters: number; archives: number; has_index: number;
+  total_cycles: number | null; measured: number; worst: number; next_freeze_at: number | null; next_delete_at: number | null; worst_label: string | null; worst_role: string | null;
+}
+
+/** One row per token: its ledger + index + archives rolled up, worst state first. */
+export const tokenHealth = (db: D1Database) =>
+  all<TokenHealthRow>(
+    db.prepare(`
+      WITH g AS (
+        SELECT token_id, COUNT(*) canisters, SUM(role = 'archive') archives, MAX(role = 'index') has_index, SUM(cycles) total_cycles,
+               SUM(confidence = 'measured') measured, MAX(${HEALTH_RANK}) worst, MIN(freeze_at) next_freeze_at, MIN(delete_at) next_delete_at
+        FROM canisters WHERE token_id IS NOT NULL AND role IN ('ledger','index','archive') GROUP BY token_id
+      ), w AS (
+        SELECT token_id, label, role, ROW_NUMBER() OVER (PARTITION BY token_id ORDER BY ${HEALTH_RANK} DESC, freeze_at ASC) rn
+        FROM canisters WHERE token_id IS NOT NULL AND role IN ('ledger','index','archive')
+      )
+      SELECT t.id, t.symbol, t.name, t.logo, t.kind, g.*, w.label worst_label, w.role worst_role
+      FROM tokens t JOIN g ON g.token_id = t.id LEFT JOIN w ON w.token_id = t.id AND w.rn = 1
+      WHERE t.hidden = 0 ORDER BY g.worst DESC, (g.next_freeze_at IS NULL), g.next_freeze_at ASC, t.symbol ASC`),
   );
 
 export const recentIncidents = (db: D1Database, limit = 20, canisterIds?: string[]) => {

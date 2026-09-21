@@ -23,6 +23,11 @@ function fmtValue(unit: string | undefined, v: number): string {
     if (a === 0) return "$0";
     return `$${v.toFixed(Math.min(12, -Math.floor(Math.log10(a)) + 3))}`;
   }
+  if (unit === "rate") return `${v >= 100 ? v.toFixed(0) : v.toFixed(2)}/s`;
+  if (unit === "count") {
+    const a = Math.abs(v);
+    return a >= 1e9 ? `${(v / 1e9).toFixed(2)} B` : a >= 1e6 ? `${(v / 1e6).toFixed(3)} M` : a >= 1e4 ? `${(v / 1e3).toFixed(0)} K` : v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  }
   return v.toLocaleString("en-US");
 }
 
@@ -62,7 +67,8 @@ async function mount(el: HTMLElement) {
     chart.timeScale().fitContent();
   };
 
-  const tools = document.querySelector<HTMLElement>(`[data-chart-tools="${el.id}"]`);
+  // A chart listens to its own range buttons, or to a shared group selector (one control, many charts).
+  const tools = document.querySelector<HTMLElement>(`[data-chart-tools="${el.id}"]`) ?? (el.dataset.group ? document.querySelector<HTMLElement>(`[data-chart-group="${el.dataset.group}"]`) : null);
   let current = el.dataset.range ?? "7d";
   tools?.querySelectorAll<HTMLButtonElement>("button[data-range]").forEach((b) => {
     b.addEventListener("click", () => {

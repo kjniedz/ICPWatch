@@ -75,6 +75,30 @@ export function SubnetItem({ s, maxBurn }: { s: SubnetRow; maxBurn: number }) {
   );
 }
 
+/** A grid of small time-series charts sharing one range selector. `subnet` scopes every chart to one subnet. */
+export function NetworkCharts({ group, charts, subnet }: { group: string; charts: [string, string, string][]; subnet?: string }) {
+  const ranges = ["24h", "7d", "30d", "90d", "1y"];
+  return (
+    <section>
+      <div class="sec-head">
+        <h2>{subnet ? "Subnet activity" : "Network activity"}</h2>
+        <div class="filters" data-chart-group={group}>
+          {ranges.map((r) => <button type="button" class="fpill" data-range={r} aria-pressed={String(r === "30d")}>{r.toUpperCase()}</button>)}
+        </div>
+      </div>
+      <div class="grid-2" style="gap:16px">
+        {charts.map(([metric, title, sub]) => (
+          <div class="card">
+            <div style="padding:14px 18px 0"><h3 style="font-size:13.5px;font-weight:700">{title}</h3><div class="src">{sub}</div></div>
+            <div class="chart-box sm" id={`${group}-${metric}`} data-group={group} data-range="30d" data-chart={`/api/v1/network/series?metric=${metric}${subnet ? `&subnet=${subnet}` : ""}`}></div>
+          </div>
+        ))}
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:8px"><span class="src">Source: <b>IC public API</b> (third party, DFINITY). These rates have no on-chain source.</span></div>
+    </section>
+  );
+}
+
 export function NetworkPage({ stats, subnets, proposals }: { stats: Kv<NetworkStats> | null; subnets: SubnetRow[]; proposals: ProposalRow[] }) {
   const s = stats?.value;
   const maxBurn = Math.max(0, ...subnets.map((x) => x.burn_per_day ?? 0));
@@ -95,6 +119,8 @@ export function NetworkPage({ stats, subnets, proposals }: { stats: Kv<NetworkSt
         <div class="card stat center"><div class="v c-pink">{s?.burn_per_day != null ? fmtCycles(s.burn_per_day) : "n/a"}</div><div class="k">Cycles burned / day</div></div>
       </div>
       <div style="display:flex;justify-content:flex-end;margin-top:8px"><Fresh ts={stats?.fetched_at} source={stats?.source ?? "IC metrics API"} staleAfter={5400} /></div>
+
+      <NetworkCharts group="net" charts={[["blocks", "Block rate", "blocks finalized per second, all subnets"], ["burn", "Cycles burned per day", "network-wide burn rate"], ["messages", "Messages executed", "queries and updates per second"], ["canisters", "Canisters", "running plus stopped"]]} />
 
       <div class="grid-2" style="margin-top:6px">
         <section>
@@ -163,6 +189,8 @@ export function SubnetPage({ s, watched }: { s: SubnetRow; watched: { id: string
         <div><div class="k">State size</div><div class="v">{fmtBytes(s.memory_bytes)}</div></div>
         <div><div class="k">Replica version</div><div class="v mono">{s.replica_version ? s.replica_version.slice(0, 12) : "n/a"}</div></div>
       </div>
+
+      <NetworkCharts group="sub" subnet={s.id} charts={[["burn", "Cycles burned per day", "this subnet"], ["blocks", "Block rate", "blocks per second"], ["messages", "Messages executed", "per second"], ["canisters", "Canisters", "running plus stopped"]]} />
 
       <div class="sec-head"><h2>Top canisters by measured burn</h2></div>
       <p class="note" style="margin:-6px 0 12px">

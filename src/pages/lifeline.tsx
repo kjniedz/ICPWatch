@@ -1,6 +1,6 @@
-import type { CanisterRow, IncidentRow, LifelineSummary } from "../db/queries";
+import type { CanisterRow, IncidentRow, LifelineSummary, TokenHealthRow } from "../db/queries";
 import { ago, fmtCycles, fmtNum, isoDate, now, span } from "../lib/format";
-import { Conf, Empty, Fresh, HealthPill } from "../ui/components";
+import { Conf, Empty, Fresh, HealthPill, TokenLogo } from "../ui/components";
 
 export const roleLabel: Record<string, string> = {
   ledger: "Ledger", index: "Index", archive: "Archive", root: "SNS root", governance: "Governance", swap: "Swap",
@@ -162,7 +162,52 @@ export function LifeSupportPanel({ items }: { items: LifeSupportItem[] }) {
   );
 }
 
-export function LifelineLive({ summary, rows, incidents, lifeSupport }: { summary: LifelineSummary; rows: CanisterRow[]; incidents: IncidentRow[]; lifeSupport: LifeSupportItem[] }) {
+const RANK_HEALTH = ["healthy", "unknown", "life", "risk", "low", "frozen", "gone"];
+
+/** Every token as one group: ledger + index + all archives, worst state first. */
+export function TokenHealthTable({ tokens }: { tokens: TokenHealthRow[] }) {
+  const nowTs = now();
+  return (
+    <div class="card tbl-wrap" style="max-height:560px;overflow-y:auto">
+      <table class="tbl" id="tokengroups" data-sortable>
+        <thead>
+          <tr>
+            <th data-sort="text">Token</th>
+            <th data-sort="num">Canisters</th>
+            <th class="r" data-sort="num">Total cycles</th>
+            <th data-sort="num">Shortest runway</th>
+            <th data-sort="num" aria-sort="descending">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tokens.map((t) => {
+            const health = RANK_HEALTH[t.worst] ?? "unknown";
+            const role = t.worst_role === "archive" ? "Archive" : t.worst_role === "index" ? "Index" : "Ledger";
+            const label = health === "healthy" ? "Healthy" : health === "unknown" ? (t.measured ? "Measuring" : "Balance unknown") : health === "frozen" ? `${role} frozen` : health === "gone" ? `${role} uninstalled` : health === "low" ? `${role} low` : health === "risk" ? `${role} at risk` : "Life support";
+            const runway = health === "frozen" || health === "gone" ? (t.next_delete_at ? `${span(t.next_delete_at - nowTs)} to deletion` : "frozen") : t.next_freeze_at ? `${span(t.next_freeze_at - nowTs)}` : health === "healthy" ? "50+ y" : "n/a";
+            return (
+              <tr data-state={health === "low" || health === "risk" ? "risk" : health === "frozen" || health === "gone" ? "frozen" : ""} data-search={`${t.symbol} ${t.name} ${t.id}`}>
+                <td data-v={t.symbol.toLowerCase()}>
+                  <a class="name" href={`/token/${t.id}#health`}>
+                    <TokenLogo id={t.id} symbol={t.symbol} logo={t.logo} />
+                    <span><span class="t">{t.name}</span><span class="sub">{t.symbol}{t.kind === "sns" ? " · SNS" : t.kind === "ck" ? " · ck" : ""}</span></span>
+                  </a>
+                </td>
+                <td data-v={t.canisters} class="muted" style="font-size:12px">ledger{t.has_index ? " + index" : ""}{t.archives ? ` + ${t.archives} archive${t.archives === 1 ? "" : "s"}` : ""}</td>
+                <td class="r num" data-v={t.total_cycles ?? ""}>{t.total_cycles != null ? fmtCycles(t.total_cycles) : <span class="muted">unknown</span>}</td>
+                <td class="nowrap" data-v={t.next_freeze_at ? t.next_freeze_at - nowTs : ""}>{runway}</td>
+                <td data-v={t.worst}><HealthPill health={health} label={label} /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div data-empty-for="tokengroups" hidden={tokens.length > 0}><Empty>No tokens match.</Empty></div>
+    </div>
+  );
+}
+
+export function LifelineLive({ summary, rows, incidents, lifeSupport, tokens }: { summary: LifelineSummary; rows: CanisterRow[]; incidents: IncidentRow[]; lifeSupport: LifeSupportItem[]; tokens: TokenHealthRow[] }) {
   return (
     <>
       <div data-part="fresh" style="display:flex;justify-content:flex-end;margin:-6px 0 12px">
@@ -190,6 +235,17 @@ export function LifelineLive({ summary, rows, incidents, lifeSupport }: { summar
           <div class="s">deduped per incident</div>
         </div>
       </div>
+
+      <div class="sec-head">
+        <h2>Tokens <span class="muted" style="font-weight:500;font-size:12px">&nbsp;<span data-count-for="tokengroups">{tokens.length}</span> groups: ledger, index, and every archive</span></h2>
+        <div class="filters">
+          <input class="input" type="search" placeholder="Filter tokens" data-filter-for="tokengroups" aria-label="Filter tokens" />
+          <button class="fpill" data-for="tokengroups" data-fkey="state" data-fval="all" aria-pressed="true">All</button>
+          <button class="fpill" data-for="tokengroups" data-fkey="state" data-fval="risk" aria-pressed="false">At risk</button>
+          <button class="fpill" data-for="tokengroups" data-fkey="state" data-fval="frozen" aria-pressed="false">Frozen</button>
+        </div>
+      </div>
+      <div data-part="tokens"><TokenHealthTable tokens={tokens} /></div>
 
       <div class="sec-head">
         <h2>Watched canisters <span class="muted" style="font-weight:500;font-size:12px">&nbsp;<span data-count-for="canisters">{rows.length}</span> shown</span></h2>
@@ -223,7 +279,7 @@ export function LifelineLive({ summary, rows, incidents, lifeSupport }: { summar
   );
 }
 
-export function LifelinePage(props: { summary: LifelineSummary; rows: CanisterRow[]; incidents: IncidentRow[]; lifeSupport: LifeSupportItem[]; version: string }) {
+export function LifelinePage(props: { summary: LifelineSummary; rows: CanisterRow[]; incidents: IncidentRow[]; lifeSupport: LifeSupportItem[]; tokens: TokenHealthRow[]; version: string }) {
   return (
     <div class="wrap page">
       <div class="page-head">

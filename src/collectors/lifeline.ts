@@ -195,8 +195,10 @@ export async function collectLifeline(env: Env, opts: { full?: boolean } = {}): 
   for (const r of readings.values()) {
     const c = byId.get(r.canisterId)!;
     const samples = history.get(c.id) ?? [];
-    const observed = r.cycles != null ? burnRate(samples, ts - DAY, ts + 1) : null;
-    const recent = r.cycles != null ? burnRate(samples, ts - 6 * 3600, ts + 1) : null;
+    // Observed burn needs 6 h of coverage before it drives projections and alerts. Until then the
+    // controller-reported idle burn is used, which is a floor rather than a noisy extrapolation.
+    const observed = r.cycles != null ? burnRate(samples, ts - DAY, ts + 1, 6 * 3600) : null;
+    const recent = r.cycles != null ? burnRate(samples, ts - 6 * 3600, ts + 1, 3 * 3600) : null;
 
     // A probe-only tick must not erase a balance measured earlier this hour by a controller read.
     const keepOld = r.cycles == null && c.cycles != null && c.measured_at != null && ts - c.measured_at < 2 * 3600 && r.runStatus === "running";
@@ -297,7 +299,7 @@ export async function rollupLifeline(env: Env): Promise<{ days: number; baseline
       a.push({ ts: r.ts, cycles: r.cycles });
     }
     for (const [id, samples] of by) {
-      const b = burnRate(samples, dayStart, dayStart + DAY);
+      const b = burnRate(samples, dayStart, dayStart + DAY, 12 * 3600);
       if (b == null) continue;
       stmts.push(env.DB.prepare("INSERT OR REPLACE INTO daily_burn (canister_id, day, burn) VALUES (?, ?, ?)").bind(id, dayStart, Math.round(b)));
       days++;

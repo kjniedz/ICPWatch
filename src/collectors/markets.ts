@@ -93,7 +93,9 @@ export async function icpUsdOnChain(host: string): Promise<number | null> {
 
 export interface MarketStats { pools: number; tokens: number; priced: number; listed: number; backfilled: number; icpUsd: number | null; divergence: number | null; errors: number }
 
-const MIN_LIST_TVL = 2000; // auto-list a DEX token once this much trusted liquidity backs it
+// Auto-list a DEX token once this much real (trusted-side) liquidity backs it. Low on purpose: the
+// point of Lifeline is to watch the long tail too. Mover lists apply their own, higher floor.
+const MIN_LIST_TVL = 250;
 
 export function trustedTvl(p: DexPool, supplyOf: (id: string) => number | null = () => null): number | null {
   const t0 = TRUSTED.has(p.token0);

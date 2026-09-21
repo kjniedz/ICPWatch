@@ -81,7 +81,7 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
           <div><div class="k">Liquidity</div><div class="v">{fmtCompact(m?.tvl_usd, "$")}</div></div>
           <div><div class="k">7d</div><div class={`v ${pctClass(m?.chg_7d)}`}>{fmtPct(m?.chg_7d)}</div></div>
           <div><div class="k">30d</div><div class={`v ${pctClass(m?.chg_30d)}`}>{fmtPct(m?.chg_30d)}</div></div>
-          <div><div class="k">Total supply</div><div class="v">{fmtCompact(supply)}</div><div class="s">ledger icrc1_total_supply &middot; {ago(t.supply_at)}</div></div>
+          <div><div class="k">Total supply</div><div class="v">{supply != null ? fmtCompact(supply) : "unreadable"}</div><div class="s">{supply != null ? <>ledger icrc1_total_supply &middot; {ago(t.supply_at)}</> : badge.health === "frozen" ? "the ledger is frozen and rejects every query, so market cap cannot be computed" : "ledger did not answer"}</div></div>
           <div><div class="k">Price in ICP</div><div class="v">{m?.price_icp != null ? fmtNum(m.price_icp, m.price_icp < 1 ? 6 : 2) : "n/a"}</div></div>
           <div><div class="k">Transfer fee</div><div class="v">{t.fee ? `${fromBase(t.fee, t.decimals)} ${t.symbol}` : "n/a"}</div></div>
           <div><div class="k">Listed</div><div class="v">{shortDate(t.listed_at)}</div><div class="s">via {t.listed_via}</div></div>
