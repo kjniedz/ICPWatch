@@ -15,8 +15,12 @@ export function fmtCycles(c: number | null | undefined): string {
   if (t >= 1000) return `${fmtNum(t, 0)} T`;
   if (t >= 100) return `${t.toFixed(1)} T`;
   if (t >= 1) return `${t.toFixed(2)} T`;
-  if (t >= 0.001) return `${t.toFixed(3)} T`;
-  return `${(c / 1e9).toFixed(2)} B`;
+  // Below a trillion, billions read better: a frozen canister holding 27.3 B is not "0.027 T".
+  const b = c / 1e9;
+  if (b >= 100) return `${b.toFixed(0)} B`;
+  if (b >= 10) return `${b.toFixed(1)} B`;
+  if (b >= 1) return `${b.toFixed(2)} B`;
+  return `${(c / 1e6).toFixed(c >= 1e8 ? 0 : 1)} M`;
 }
 
 export function fmtNum(n: number | null | undefined, digits = 0): string {

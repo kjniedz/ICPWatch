@@ -197,7 +197,11 @@ export async function collectLifeline(env: Env, opts: { full?: boolean } = {}): 
     const samples = history.get(c.id) ?? [];
     // Observed burn needs 6 h of coverage before it drives projections and alerts. Until then the
     // controller-reported idle burn is used, which is a floor rather than a noisy extrapolation.
-    const observed = r.cycles != null ? burnRate(samples, ts - DAY, ts + 1, 6 * 3600) : null;
+    // Exception: a frozen canister executes nothing, so its balance falls at a steady idle rate and an
+    // hour of readings is already a sound estimate. That matters most for blackhole-measured canisters,
+    // where the controller reports no idle burn and the observed decline is the only way to date deletion.
+    const isFrozen = r.runStatus === "frozen" || (r.runStatus == null && c.run_status === "frozen");
+    const observed = r.cycles != null ? burnRate(samples, ts - DAY, ts + 1, isFrozen ? 3600 : 6 * 3600) : null;
     const recent = r.cycles != null ? burnRate(samples, ts - 6 * 3600, ts + 1, 3 * 3600) : null;
 
     // A probe-only tick must not erase a balance measured earlier this hour by a controller read.
@@ -211,7 +215,8 @@ export async function collectLifeline(env: Env, opts: { full?: boolean } = {}): 
     // Balance at or under the freezing threshold means frozen, whatever the controller's status field says.
     if (runStatus === "running" && cycles != null && idle != null && idle > 0 && threshold != null && cycles <= (idle * threshold) / DAY) runStatus = "frozen";
 
-    const facts = { cycles, runStatus, freezingThresholdS: threshold, idleBurnPerDay: idle, observedBurnPerDay: observed ?? (keepOld ? c.burn_per_day : null), lifeSupport: !!c.life_support };
+    const facts = { cycles, runStatus, freezingThresholdS: threshold, idleBurnPerDay: idle, observedBurnPerDay: observed ?? (keepOld ? c.burn_per_day : null), // "Life support" is only claimed while the engine can actually act, not merely because a canister is enrolled.
+      lifeSupport: !!c.life_support && env.LIFE_SUPPORT_ENABLED === "true" };
     const p = project(facts);
     const health = classify(facts, p);
     // Projections built on assumed thresholds are inferred even when the balance itself is measured.

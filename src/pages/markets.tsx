@@ -2,7 +2,10 @@ import type { Kv, PoolRow, TokenMarketRow } from "../db/queries";
 import { fmtCompact, fmtNum, fmtPct, fmtUsd, pctClass } from "../lib/format";
 import { Empty, Fresh, HealthPill, Spark, TokenLogo } from "../ui/components";
 
-export interface MarketTotals { tvl_usd: number; vol_24h_usd: number; pools: number; tokens: number; priced: number; dexes: string[] }
+export interface MarketTotals { tvl_usd: number; vol_24h_usd: number; pools: number; tokens: number; priced: number; dexes: string[]; stranded_tvl_usd?: number; dead_ledgers?: number }
+
+/** The ledger canister itself is uninstalled: balances and transfers are gone, whatever a DEX still lists. */
+export const isDeadLedger = (t: { worst_health: string | null; health_note: string | null }) => t.worst_health === "gone" && t.health_note === "ledger";
 
 const parse = <T,>(s: string | null | undefined, fallback: T): T => {
   if (!s) return fallback;
@@ -60,7 +63,7 @@ export function TokenTable({ rows, id = "tokens" }: { rows: TokenMarketRow[]; id
             const liq = topLiq(t);
             const h = tokenHealthLabel(t);
             return (
-              <tr data-id={t.id} data-kind={t.kind} data-hstate={h.health === "healthy" ? "healthy" : h.health === "unknown" ? "unknown" : "risk"} data-search={`${t.symbol} ${t.name} ${t.id}`}>
+              <tr data-id={t.id} data-kind={t.kind} class={isDeadLedger(t) ? "dead" : undefined} data-hstate={isDeadLedger(t) ? "dead risk" : h.health === "healthy" ? "healthy" : h.health === "unknown" ? "unknown" : "risk"} data-search={`${t.symbol} ${t.name} ${t.id}`}>
                 <td><button class="star" data-star={t.id} aria-label={`Watch ${t.symbol}`} aria-pressed="false">&#9734;</button></td>
                 <td class="muted hide-m">{i + 1}</td>
                 <td data-v={t.name.toLowerCase()}>
@@ -68,7 +71,7 @@ export function TokenTable({ rows, id = "tokens" }: { rows: TokenMarketRow[]; id
                     <TokenLogo id={t.id} symbol={t.symbol} logo={t.logo} />
                     <span>
                       <span class="t">{t.name}</span>
-                      <span class="sub">{t.symbol} {kindChip(t.kind)}</span>
+                      <span class="sub">{t.symbol} {kindChip(t.kind)}{isDeadLedger(t) ? <span class="chip chip-dead" title="The ledger canister has been uninstalled. Balances and transfers no longer exist, so any listed price or liquidity is stranded.">DEAD LEDGER</span> : null}</span>
                     </span>
                   </a>
                 </td>
@@ -127,7 +130,7 @@ function Movers({ rows }: { rows: TokenMarketRow[] }) {
 
 export function MarketsPage({ rows, pools, totals }: { rows: TokenMarketRow[]; pools: PoolRow[]; totals: Kv<MarketTotals> | null }) {
   // Movers need real liquidity behind them, otherwise dust pools dominate the list.
-  const movable = rows.filter((t) => t.chg_24h != null && (t.tvl_usd ?? 0) >= 5000);
+  const movable = rows.filter((t) => t.chg_24h != null && (t.tvl_usd ?? 0) >= 5000 && !isDeadLedger(t));
   const gainers = [...movable].sort((a, b) => b.chg_24h! - a.chg_24h!).filter((t) => t.chg_24h! > 0).slice(0, 5);
   const losers = [...movable].sort((a, b) => a.chg_24h! - b.chg_24h!).filter((t) => t.chg_24h! < 0).slice(0, 5);
   const tv = totals?.value;
@@ -167,6 +170,7 @@ export function MarketsPage({ rows, pools, totals }: { rows: TokenMarketRow[]; p
           <button class="fpill" data-for="tokens" data-fkey="kind" data-fval="ck" aria-pressed="false">ck tokens</button>
           <button class="fpill" data-for="tokens" data-fkey="kind" data-fval="community" aria-pressed="false">Community</button>
           <button class="fpill" data-for="tokens" data-fkey="hstate" data-fval="risk" aria-pressed="false" title="Tokens whose ledger, index, or archives are low, frozen, or at risk">Health risk</button>
+          <button class="fpill" data-for="tokens" data-fkey="hstate" data-fval="dead" aria-pressed="false" title="Tokens whose ledger canister has been uninstalled">Dead ledgers</button>
           <a class="fpill" href="/watchlist">&#9733; Watchlist</a>
           <a class="fpill" href="/markets/screener">Screener</a>
           <a class="fpill" href="/portfolio">Portfolio</a>
@@ -174,6 +178,7 @@ export function MarketsPage({ rows, pools, totals }: { rows: TokenMarketRow[]; p
       </div>
       <TokenTable rows={rows} />
       <p class="note" style="margin-top:10px">
+        {tv?.dead_ledgers ? <><b style="color:var(--text)">{tv.dead_ledgers} listed tokens have a dead ledger</b>: the canister was uninstalled, so balances no longer exist. They are dimmed, kept out of the movers, and their {fmtCompact(tv.stranded_tvl_usd, "$")} of stranded pool liquidity is excluded from the totals above. </> : null}
         Prices are liquidity-weighted across DEX pools. Supply is read from each ICRC ledger. The Health column comes from Lifeline: it reflects the worst state across a token's
         ledger, index, and archive canisters. <a class="link" href="/data-sources">Data sources</a>
       </p>

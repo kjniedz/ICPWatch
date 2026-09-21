@@ -157,7 +157,12 @@ export function CanisterPage({ c, changes, history, incidents, siblings }: {
 }) {
   const controllers = parse<string[]>(c.controllers, []);
   const nowTs = now();
-  const threshold = c.idle_burn_per_day != null && c.freezing_threshold_s != null ? (c.idle_burn_per_day * c.freezing_threshold_s) / 86400 : null;
+  // A frozen canister burns only its idle cost, so when no controller reports idle burn (blackhole
+  // source) the observed decline of a frozen balance stands in for it, and is labeled as an estimate.
+  const idleEst = c.idle_burn_per_day ?? (c.run_status === "frozen" && c.burn_per_day ? c.burn_per_day : null);
+  const idleIsEstimate = c.idle_burn_per_day == null && idleEst != null;
+  const threshold = idleEst != null && c.freezing_threshold_s != null ? (idleEst * c.freezing_threshold_s) / 86400 : null;
+  const burnBreakdown = c.burn_per_day ? `${fmtCycles(c.burn_per_day / 86400)}/s · ${fmtCycles(c.burn_per_day / 24)}/hr · ${fmtCycles(c.burn_per_day * 7)}/wk · ${fmtCycles(c.burn_per_day * 30)}/mo` : null;
   return (
     <div class="wrap page">
       <Crumbs items={[["Lifeline", "/lifeline"], ...(c.token_id ? [[c.token_symbol ?? "Token", `/token/${c.token_id}`] as [string, string]] : []), [c.label, null]]} />
@@ -175,12 +180,12 @@ export function CanisterPage({ c, changes, history, incidents, siblings }: {
           <div class="v">{c.cycles != null ? fmtCycles(c.cycles) : "unknown"}</div>
           <div class="s"><Conf confidence={c.confidence} source={c.cycles_source} /></div>
         </div>
-        <div><div class="k">Burn per day</div><div class="v">{c.burn_per_day != null ? fmtCycles(c.burn_per_day) : "n/a"}</div><div class="s">{c.burn_source === "observed" ? "observed from our readings" : c.burn_source === "idle" ? "idle burn reported by controller" : "needs more readings"}</div></div>
+        <div><div class="k">Burn per day</div><div class="v">{c.burn_per_day != null ? fmtCycles(c.burn_per_day) : "n/a"}</div><div class="s">{c.burn_source === "observed" ? "observed from our readings" : c.burn_source === "idle" ? "idle burn reported by controller" : "needs more readings"}{burnBreakdown ? <><br />{burnBreakdown}</> : null}</div></div>
         <div><div class="k">Runway</div><div class="v">{runwayCell(c, nowTs)}</div><div class="s">{c.freeze_at ? `freezes around ${shortDate(c.freeze_at)}` : ""}</div></div>
         <div><div class="k">Projected deletion</div><div class="v">{c.delete_at ? shortDate(c.delete_at) : "n/a"}</div><div class="s">{c.delete_at ? `in ${span(c.delete_at - nowTs)} if nothing changes` : ""}</div></div>
         <div><div class="k">Run status</div><div class="v">{c.run_status.replace(/_/g, " ")}</div><div class="s">{c.probed_at ? `probed ${ago(c.probed_at)}` : ""}</div></div>
-        <div><div class="k">Freezing threshold</div><div class="v">{threshold != null ? fmtCycles(threshold) : "n/a"}</div><div class="s">{c.freezing_threshold_s != null ? `${Math.round(c.freezing_threshold_s / 86400)} days of idle burn` : "not readable"}</div></div>
-        <div><div class="k">Idle burn</div><div class="v">{c.idle_burn_per_day != null ? `${fmtCycles(c.idle_burn_per_day)} / day` : "n/a"}</div></div>
+        <div><div class="k">Freezing threshold</div><div class="v">{threshold != null ? fmtCycles(threshold) : "n/a"}</div><div class="s">{c.freezing_threshold_s != null ? `${Math.round(c.freezing_threshold_s / 86400)} days of idle burn${idleIsEstimate ? ", estimated: it unfreezes above this" : ""}` : "not readable"}</div></div>
+        <div><div class="k">Idle burn</div><div class="v">{idleEst != null ? `${fmtCycles(idleEst)} / day` : "n/a"}</div><div class="s">{idleIsEstimate ? "estimated from the frozen balance's own decline" : c.idle_burn_per_day != null ? "reported by controller" : ""}</div></div>
         <div><div class="k">Memory</div><div class="v">{fmtBytes(c.memory_bytes)}</div></div>
       </div>
       <div style="margin-top:8px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">

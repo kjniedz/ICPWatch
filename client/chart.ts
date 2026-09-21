@@ -13,7 +13,9 @@ function palette() {
 function fmtValue(unit: string | undefined, v: number): string {
   if (unit === "cycles") {
     const t = v / 1e12;
-    return t >= 100 ? `${t.toFixed(0)} T` : t >= 1 ? `${t.toFixed(2)} T` : `${t.toFixed(3)} T`;
+    if (t >= 1) return t >= 100 ? `${t.toFixed(0)} T` : `${t.toFixed(2)} T`;
+    const b = v / 1e9;
+    return b >= 100 ? `${b.toFixed(1)} B` : b >= 1 ? `${b.toFixed(3)} B` : `${(v / 1e6).toFixed(1)} M`;
   }
   if (unit === "usd") {
     const a = Math.abs(v);

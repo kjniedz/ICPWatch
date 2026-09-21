@@ -223,8 +223,15 @@ export async function collectMarkets(env: Env): Promise<MarketStats> {
     if (writeCandle && tvl >= 500) stmts.push(upHour.bind(id, Math.floor(ts / 3600) * 3600, price));
     stats.priced++;
   }
-  // Network-wide totals: every pool counted once.
+  // Network-wide totals: every pool counted once. Pools that include a token whose ledger has been
+  // uninstalled are excluded: that liquidity is stranded, since the ledger can no longer move it.
+  const dead = new Set((await env.DB.prepare("SELECT id FROM canisters WHERE role = 'ledger' AND health = 'gone'").all<{ id: string }>()).results.map((r) => r.id));
+  let strandedTvl = 0;
   for (const r of poolRows) {
+    if (dead.has(r.p.token0) || dead.has(r.p.token1)) {
+      strandedTvl += r.tvl;
+      continue;
+    }
     totalTvl += r.tvl;
     totalVol += r.p.vol24hUsd;
   }
@@ -235,7 +242,7 @@ export async function collectMarkets(env: Env): Promise<MarketStats> {
   stmts.push(env.DB.prepare("DELETE FROM pools WHERE updated_at < ?").bind(ts));
   stmts.push(
     env.DB.prepare("INSERT OR REPLACE INTO kv (key, value, source, fetched_at) VALUES ('markets:totals', ?, ?, ?)").bind(
-      JSON.stringify({ tvl_usd: totalTvl, vol_24h_usd: totalVol, pools: keep.length, tokens: known.size, priced: stats.priced, dexes: snaps.map((s) => s.dex) }),
+      JSON.stringify({ tvl_usd: totalTvl, vol_24h_usd: totalVol, stranded_tvl_usd: strandedTvl, dead_ledgers: dead.size, pools: keep.length, tokens: known.size, priced: stats.priced, dexes: snaps.map((s) => s.dex) }),
       snaps.map((s) => s.dex).join(" + "), ts,
     ),
     env.DB.prepare("INSERT OR REPLACE INTO kv (key, value, source, fetched_at) VALUES ('markets:icp_usd', ?, ?, ?)").bind(

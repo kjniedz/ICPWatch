@@ -33,6 +33,14 @@ describe("project", () => {
     expect(p.secondsToFreeze! / DAY).toBeCloseTo(100 - 30, 3);
   });
 
+  it("dates deletion for a frozen canister from its own observed decline when no idle burn is reported", () => {
+    // The iDoge ledger case: blackhole source, 27.3 B cycles, falling about 1.18 B per day.
+    const p = project(facts({ cycles: 27.3e9, runStatus: "frozen", idleBurnPerDay: null, observedBurnPerDay: 1.18e9 }));
+    expect(p.secondsToFreeze).toBe(0);
+    expect(p.secondsToDeletion! / DAY).toBeCloseTo(23.1, 1);
+    expect(p.assumed).toBe(true);
+  });
+
   it("returns nothing when the balance is unknown", () => {
     expect(project(facts({ cycles: null })).secondsToFreeze).toBeNull();
   });

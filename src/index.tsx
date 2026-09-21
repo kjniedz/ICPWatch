@@ -225,7 +225,8 @@ app.get("/canister/:id", async (c) => {
 /** Holders come from our own block index once a ledger is fully replayed; until then from the labeled third-party fallback. */
 async function holdersFor(env: Env, t: q.TokenRow) {
   const prog = await indexProgress(env.DB, t.id).catch(() => null);
-  if (prog?.complete) {
+  // Our index is only shown once it is complete AND has reconciled against total supply in production.
+  if (prog?.complete && (prog as { trusted?: boolean }).trusted === true) {
     const [top, stats] = await Promise.all([topHolders(env.DB, t.id, { limit: 25, totalSupplyRaw: t.total_supply }), holderStats(env.DB, t.id, t.total_supply)]);
     return {
       rows: top.holders.map((h) => ({ account: h.account, balance: h.balance, share: h.share })), total: stats.holders, top10: stats.top10Share,

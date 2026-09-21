@@ -10,3 +10,4 @@ public/assets/*.css
 worker-configuration.d.ts
 .DS_Store
 .prod-admin-token
+.life-support-identity
