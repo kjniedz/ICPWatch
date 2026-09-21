@@ -49,7 +49,7 @@ export const icpswap: DexAdapter = {
         price0Usd: f(p.token0Price), price1Usd: f(p.token1Price), vol24hUsd: f(p.volumeUSD24H), vol7dUsd: f(p.volumeUSD7D), feeBps: f(p.poolFee) / 100,
       })),
       quotes: tokens.map((t) => ({
-        ledger: t.tokenLedgerId!, symbol: t.tokenSymbol!, name: t.tokenName!, priceUsd: f(t.price), chg24h: t.priceChange24H != null ? f(t.priceChange24H) : null,
+        ledger: t.tokenLedgerId!, symbol: t.tokenSymbol || "?", name: t.tokenName || t.tokenSymbol || "?", priceUsd: f(t.price), chg24h: t.priceChange24H != null ? f(t.priceChange24H) : null,
         vol24hUsd: f(t.volumeUSD24H), vol7dUsd: f(t.volumeUSD7D),
       })),
     };
@@ -172,7 +172,7 @@ export async function collectMarkets(env: Env): Promise<MarketStats> {
   const insToken = env.DB.prepare("INSERT OR IGNORE INTO tokens (id, symbol, name, decimals, kind, logo, listed_at, listed_via, updated_at) VALUES (?, ?, ?, 8, 'community', ?, ?, ?, ?)");
   for (const [id, a] of agg) {
     const tvl = [...a.tvlByDex.values()].reduce((x, y) => x + y, 0);
-    if (!known.has(id) && tvl >= MIN_LIST_TVL && /^[a-z0-9-]+-cai$/.test(id)) {
+    if (!known.has(id) && tvl >= MIN_LIST_TVL && /^[a-z0-9-]+-cai$/.test(id) && a.symbol && a.symbol !== "?" && a.symbol !== "null") {
       const dex = [...a.tvlByDex.entries()].sort((x, y) => y[1] - x[1])[0]![0];
       stmts.push(insToken.bind(id, a.symbol.slice(0, 24), a.name.replace(EM_DASH, " - ").slice(0, 80), `/logo/${id}`, ts, `dex:${dex}`, ts));
       known.set(id, { id, decimals: 8, total_supply: null });
