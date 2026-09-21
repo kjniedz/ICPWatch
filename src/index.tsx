@@ -10,6 +10,8 @@ import { collectMarkets } from "./collectors/markets";
 import { collectNetwork } from "./collectors/network";
 import { collectSns } from "./collectors/sns";
 import * as q from "./db/queries";
+import { indexJob } from "./indexer";
+import { holderStats, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
 import { now } from "./lib/format";
 import { ALERT_TYPES, EVENT_TYPES } from "./lib/health";
@@ -220,13 +222,28 @@ app.get("/canister/:id", async (c) => {
   }, <CanisterPage c={can} changes={changes} history={history} incidents={incidents} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
 });
 
+/** Holders come from our own block index once a ledger is fully replayed; until then from the labeled third-party fallback. */
+async function holdersFor(env: Env, t: q.TokenRow) {
+  const prog = await indexProgress(env.DB, t.id).catch(() => null);
+  if (prog?.complete) {
+    const [top, stats] = await Promise.all([topHolders(env.DB, t.id, { limit: 25, totalSupplyRaw: t.total_supply }), holderStats(env.DB, t.id, t.total_supply)]);
+    return {
+      rows: top.holders.map((h) => ({ account: h.account, balance: h.balance, share: h.share })), total: stats.holders, top10: stats.top10Share,
+      fetched_at: prog.asOfTs ?? prog.updatedAt, source: "ICPWatch block index, replayed from the ledger and its archives", indexing: null,
+    };
+  }
+  const fallback = t.id === ICP_LEDGER ? null : await holdersCached(env, t.id, t.decimals).catch(() => null);
+  const indexing = prog ? { percent: prog.percent, status: prog.status } : null;
+  return fallback ? { ...fallback, total: null, indexing } : indexing ? { rows: [], total: null, fetched_at: prog!.updatedAt, source: "ICPWatch block index", indexing } : null;
+}
+
 app.get("/token/:id", async (c) => {
   const db = c.env.DB;
   const t = await q.getToken(db, c.req.param("id"));
   if (!t) return page(c, { title: "Token not found", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That token is not in the registry. You can request a listing." />, 404);
   if (t.id !== c.req.param("id")) return c.redirect(`/token/${t.id}`, 301);
   const [m, canisters, pools, holders, sns] = await Promise.all([
-    q.getMarket(db, t.id), q.canistersForToken(db, t.id), q.poolsForToken(db, t.id), t.id === ICP_LEDGER ? Promise.resolve(null) : holdersCached(c.env, t.id, t.decimals).catch(() => null),
+    q.getMarket(db, t.id), q.canistersForToken(db, t.id), q.poolsForToken(db, t.id), holdersFor(c.env, t),
     q.kvGet<SnsSectionData>(db, `sns:${t.id}`),
   ]);
   const incidents = await q.recentIncidents(db, 8, canisters.map((x) => x.id));
@@ -250,9 +267,29 @@ app.get("/markets/new", async (c) => {
   const [tokens, first] = await Promise.all([q.newestTokens(c.env.DB, 60), c.env.DB.prepare("SELECT MIN(listed_at) t FROM tokens").first<{ t: number | null }>()]);
   return page(c, { title: "New listings and SNS launches", path: "/markets/new", section: "markets", description: "New tokens on the Internet Computer as they appear: SNS launches, ck tokens, and DEX listings." }, <NewListingsPage tokens={tokens} since={first?.t ?? null} />);
 });
-app.get("/markets/whales", async (c) =>
-  page(c, { title: "Whale alerts", path: "/markets/whales", section: "markets", description: "The largest token transfers on the Internet Computer in the last 24 hours." }, <WhalesPage feed={await q.kvGet<WhaleTransfer[]>(c.env.DB, "markets:whales")} />),
-);
+app.get("/markets/whales", async (c) => {
+  const db = c.env.DB;
+  const [third, own, prices] = await Promise.all([
+    q.kvGet<WhaleTransfer[]>(db, "markets:whales"),
+    largeTransfers(db, { limit: 300, kinds: ["transfer"] }).catch(() => []),
+    db.prepare("SELECT token_id, price_usd FROM market WHERE price_usd > 0").all<{ token_id: string; price_usd: number }>(),
+  ]);
+  // Our own index wins wherever it has the block; the third-party feed fills in ledgers still syncing.
+  const price = new Map(prices.results.map((p) => [p.token_id, p.price_usd]));
+  const since = now() - 86400;
+  const merged = new Map<string, WhaleTransfer>();
+  for (const w of third?.value ?? []) if (w.ts >= since) merged.set(`${w.token_id}:${w.index}`, w);
+  let ownCount = 0;
+  for (const r of own) {
+    const usd = r.amount * (price.get(r.ledger) ?? 0);
+    if (r.ts < since || usd < 5000 || !r.from_account || !r.to_account) continue;
+    merged.set(`${r.ledger}:${r.block}`, { token_id: r.ledger, symbol: r.symbol ?? "?", index: r.block, amount: r.amount, usd, from: r.from_account, to: r.to_account, ts: r.ts });
+    ownCount++;
+  }
+  const value = [...merged.values()].sort((a, b) => b.usd - a.usd).slice(0, 80);
+  const source = ownCount ? `ICPWatch block index (${ownCount} of ${value.length})${value.length > ownCount ? " + ICRC ledger API (third party) for ledgers still syncing" : ""}` : (third?.source ?? "ledger API");
+  return page(c, { title: "Whale alerts", path: "/markets/whales", section: "markets", description: "The largest token transfers on the Internet Computer in the last 24 hours." }, <WhalesPage feed={{ value, source, fetched_at: third?.fetched_at ?? now() }} />);
+});
 app.get("/markets/screener", async (c) => {
   const p = { kind: c.req.query("kind") ?? "", health: c.req.query("health") ?? "", minMcap: c.req.query("minMcap") ?? "", minVol: c.req.query("minVol") ?? "", minLiq: c.req.query("minLiq") ?? "", chg: c.req.query("chg") ?? "" };
   const all = await q.listTokens(c.env.DB);
@@ -468,6 +505,11 @@ api.get("/token/:id/prices", async (c) => {
   return c.json({ unit: "usd", source: "DEX candles", points: rows.map((r) => ({ t: r.ts, o: r.open ?? r.price_usd, h: r.high ?? r.price_usd, l: r.low ?? r.price_usd, c: r.price_usd })) });
 });
 api.get("/pools", async (c) => c.json({ pools: await q.topPools(c.env.DB, 300) }));
+api.get("/indexer", async (c) => c.json({ overview: await indexOverview(c.env.DB), source: "ICPWatch block index" }));
+api.get("/token/:id/holders", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  return t ? c.json(await holdersFor(c.env, t)) : c.json({ error: "unknown token" }, 404);
+});
 api.get("/incidents", async (c) => c.json({ incidents: await q.recentIncidents(c.env.DB, 100) }));
 api.get("/network/summary", async (c) => c.json(await q.kvGet(c.env.DB, "network:stats")));
 // Network time series. Rates have no on-chain source, so this proxies the IC public API (third party)
@@ -520,6 +562,7 @@ const JOBS = {
   whales: (env: Env) => collectWhales(env),
   rollup: (env: Env) => rollupLifeline(env),
   sns: (env: Env) => collectSns(env),
+  indexer: (env: Env) => indexJob(env),
   // Dry run unless explicitly enabled. Even then the engine's own gate (identity, kill switch, caps) decides.
   "life-support": (env: Env) => lifeSupportTick(env, { dryRun: env.LIFE_SUPPORT_ENABLED !== "true" }),
   history: (env: Env) => runHistory(env),
@@ -636,7 +679,7 @@ export default {
           await runJob(env, n?.n ? "lifeline" : "lifeline-full");
           break;
         }
-        case "*/5 * * * *": await runJob(env, "markets"); break;
+        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "indexer"); break;
         case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); break;
       }

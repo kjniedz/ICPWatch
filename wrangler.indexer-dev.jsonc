@@ -1,0 +1,22 @@
+{
+  // Isolated harness for the block indexer. Never deployed. Always run with:
+  //   npx wrangler dev -c wrangler.indexer-dev.jsonc --persist-to /tmp/icpwatch-indexer-state --port 8801
+  // Migrations (local only):
+  //   npx wrangler d1 migrations apply icpwatch --local --persist-to /tmp/icpwatch-indexer-state -c wrangler.indexer-dev.jsonc
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "icpwatch-indexer-dev",
+  "main": "src/indexer/dev-entry.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "icpwatch",
+      "database_id": "823f59d4-f4f5-4a1d-8f8c-8029e890f0c7",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "IC_HOST": "https://icp-api.io"
+  }
+}

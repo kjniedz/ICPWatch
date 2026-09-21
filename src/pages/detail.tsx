@@ -29,7 +29,11 @@ export interface SnsInfo {
 
 export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
   t: TokenRow; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsSectionData | null;
-  holders: { rows: { account: string; balance: number; share: number | null }[]; total: number | null; fetched_at: number; source: string } | null;
+  holders: {
+    rows: { account: string; balance: number; share: number | null }[]; total: number | null; top10?: number | null; fetched_at: number; source: string;
+    /** Set while our own index is still replaying this ledger: the list then comes from the third-party fallback. */
+    indexing?: { percent: number; status: string } | null;
+  } | null;
 }) {
   const supply = fromBase(t.total_supply, t.decimals);
   const group = canisters.filter((c) => ["ledger", "index", "archive"].includes(c.role));
@@ -118,6 +122,13 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
       {sns ? <SnsDaoSection sns={sns} symbol={t.symbol} /> : null}
 
       <div class="sec-head"><h2>Top holders</h2>{holders ? <Fresh ts={holders.fetched_at} source={holders.source} staleAfter={86400} /> : null}</div>
+      {holders && (holders.total != null || holders.top10 != null || holders.indexing) ? (
+        <p class="note" style="margin:-6px 0 12px">
+          {holders.total != null ? <><b style="color:var(--text)">{fmtNum(holders.total)}</b> accounts hold {t.symbol}. </> : null}
+          {holders.top10 != null ? <>The ten largest hold <b style="color:var(--text)">{(holders.top10 * 100).toFixed(1)}%</b> of supply. </> : null}
+          {holders.indexing ? <>ICPWatch is replaying this ledger's blocks into its own index ({holders.indexing.status === "error" || holders.indexing.status === "unsupported" ? "this ledger cannot be replayed right now" : `${holders.indexing.percent}% done`}), so this list still comes from the third-party source.</> : null}
+        </p>
+      ) : null}
       {holders?.rows.length ? (
         <div class="card tbl-wrap">
           <table class="tbl">
