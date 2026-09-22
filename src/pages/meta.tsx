@@ -4,7 +4,7 @@ import { shortDate } from "../lib/format";
 import { Crumbs, Empty } from "../ui/components";
 
 const SOURCE_TEXT: Record<string, string> = {
-  icrc1_metadata: "ledger metadata (on chain)", sns_metadata: "SNS metadata (on chain)", seed: "ICPWatch registry", icpwatch: "ICPWatch", coingecko: "CoinGecko", listing: "listing",
+  icrc1_metadata: "ledger metadata (on chain)", sns_metadata: "SNS metadata (on chain)", seed: "ICPWatch registry", icpwatch: "ICPWatch", coingecko: "CoinGecko", listing: "listing", verified_project: "verified project profile",
 };
 const sourceText = (s: string) => (s.startsWith("submission:") ? "community submission" : SOURCE_TEXT[s] ?? s);
 const host = (u: string) => u.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
@@ -31,7 +31,7 @@ export function AboutSection({ tokenId, symbol, description, links, fallback }: 
           </div>
         ) : null}
         <div class="src" style="margin-top:10px">
-          Links are published only when the ledger or DAO states them on chain, or two independent sources agree. <a class="link" href={`/token/${tokenId}/links`}>Suggest a link</a>.
+          Links are published only when the ledger or DAO states them on chain, or two independent sources agree. <a class="link" href={`/token/${tokenId}/links`}>Suggest a link</a>. Run this project? <a class="link" href={`/token/${tokenId}/claim`}>Claim it</a> for a verified badge.
         </div>
       </div>
     </>

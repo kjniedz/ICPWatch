@@ -18,7 +18,7 @@ export type LinkKind = "website" | "twitter" | "telegram" | "discord" | "github"
 export const LINK_KINDS: LinkKind[] = ["website", "docs", "whitepaper", "github", "twitter", "telegram", "discord", "forum", "other"];
 export const KIND_TEXT: Record<LinkKind, string> = { website: "Website", twitter: "X", telegram: "Telegram", discord: "Discord", github: "GitHub", docs: "Docs", whitepaper: "Whitepaper", forum: "Forum", other: "Link" };
 
-const STRONG = new Set(["icrc1_metadata", "sns_metadata", "seed", "icpwatch"]);
+const STRONG = new Set(["icrc1_metadata", "sns_metadata", "seed", "icpwatch", "verified_project"]);
 
 export interface TokenLink { token_id: string; kind: LinkKind; url: string; sources: string[]; status: "published" | "pending" | "rejected"; note: string | null; updated_at: number }
 

@@ -43,6 +43,8 @@ import { PriceAlertsPage } from "./pages/pricealerts";
 import { TelegramPage } from "./pages/telegram";
 import { SnapshotFormPage, SnapshotPage, SnapshotsIndexPage } from "./pages/snapshots";
 import { LaunchpadPage } from "./pages/launchpad";
+import { ClaimPage, ProfileEditPage, VerifiedProfile } from "./pages/claims";
+import { checkClaims, getClaim, profileByKey, saveProfile, startClaim, verifiedProfile } from "./claims";
 import { collectLaunchpad, listLaunches } from "./launchpad";
 import { evaluateRugSignals } from "./alerts/rug";
 import { getSnapshot, listSnapshots, parseCsv, parseFilters, snapshotCsv, takeSnapshot } from "./snapshots";
@@ -379,8 +381,8 @@ app.get("/token/:id", async (c) => {
     q.getMarket(db, t.id), q.canistersForToken(db, t.id), q.poolsForToken(db, t.id), holdersFor(c.env, t),
     q.kvGet<SnsSectionData>(db, `sns:${t.id}`), db.prepare("SELECT * FROM trust_scores WHERE token_id = ?").bind(t.id).first<StoredTrust>(),
   ]);
-  const [incidents, links, description] = await Promise.all([q.recentIncidents(db, 8, canisters.map((x) => x.id)), linksFor(db, t.id).catch(() => []), descriptionFor(db, t.id).catch(() => null)]);
-  const about = <AboutSection tokenId={t.id} symbol={t.symbol} description={description} links={links} fallback={{ description: t.description, url: t.url }} />;
+  const [incidents, links, description, profile] = await Promise.all([q.recentIncidents(db, 8, canisters.map((x) => x.id)), linksFor(db, t.id).catch(() => []), descriptionFor(db, t.id).catch(() => null), verifiedProfile(db, t.id).catch(() => null)]);
+  const about = <>{profile ? <VerifiedProfile p={profile} symbol={t.symbol} /> : null}<AboutSection tokenId={t.id} symbol={t.symbol} description={description} links={links} fallback={{ description: t.description, url: t.url }} /></>;
   return page(c, {
     title: `${t.name} (${t.symbol}) price, liquidity, and canister health`, path: `/token/${t.id}`, section: "markets", chart: true,
     description: `${t.symbol} ${m?.price_usd != null ? `is ${fmtUsd(m.price_usd)} ` : "price "}aggregated across ICP DEXs, with market cap, liquidity, top holders, trust score, and the cycle health of its ledger, index, and archive canisters.${description ? ` ${description.text.split(". ")[0]}.` : ""}`.slice(0, 300),
@@ -388,6 +390,53 @@ app.get("/token/:id", async (c) => {
     jsonLd: { "@context": "https://schema.org", "@type": "WebPage", name: `${t.name} (${t.symbol})`, url: `https://icpwatch.com/token/${t.id}`, dateModified: m?.updated_at ? new Date(m.updated_at * 1000).toISOString() : undefined,
       about: { "@type": "Thing", name: t.name, alternateName: t.symbol, identifier: t.id, description: `ICRC-1 token on the Internet Computer, ledger canister ${t.id}` } },
   }, <TokenPage t={t} m={m} canisters={canisters} pools={pools} incidents={incidents} trust={trust} sns={sns ? { ...sns.value, fetched_at: sns.fetched_at, source: sns.source } : null} holders={holders} about={about} />);
+});
+const claimMeta = (t: q.TokenRow): PageMeta => ({ title: `Claim ${t.symbol}: verified project profile`, path: `/token/${t.id}/claim`, section: "markets", description: `Prove you run ${t.name} with a controller payment, a DAO motion, or a domain file, and get a verified badge and profile on ICPWatch. Never changes the trust score.`, noindex: true });
+app.get("/token/:id/claim", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return page(c, { title: "Token not found", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That token is not tracked." />, 404);
+  const claim = c.req.query("claim") ? await getClaim(c.env.DB, c.req.query("claim")!) : null;
+  return page(c, claimMeta(t), <ClaimPage t={t} claim={claim && claim.token_id === t.id ? claim : null} isSns={t.kind === "sns"} />);
+});
+app.post("/token/:id/claim", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.text("unknown token", 404);
+  const form = await c.req.parseBody();
+  if (form.website) return c.redirect(`/token/${t.id}/claim`, 303);
+  const method = String(form.method ?? "");
+  if (!["controller_payment", "dao_motion", "domain"].includes(method)) return page(c, claimMeta(t), <ClaimPage t={t} claim={null} isSns={t.kind === "sns"} result={{ ok: false, message: "Pick a method." }} />);
+  const r = await startClaim(c.env.DB, t.id, method as "controller_payment", form.subject ? String(form.subject).trim() : undefined, form.contact ? String(form.contact) : undefined);
+  if (!r.ok) return page(c, claimMeta(t), <ClaimPage t={t} claim={null} isSns={t.kind === "sns"} result={{ ok: false, message: r.error }} />);
+  return c.redirect(`/token/${t.id}/claim?claim=${r.claim.id}`, 303);
+});
+app.post("/token/:id/claim/check", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.text("unknown token", 404);
+  const form = await c.req.parseBody();
+  const claim = await getClaim(c.env.DB, String(form.claim ?? ""));
+  if (!claim || claim.token_id !== t.id) return c.redirect(`/token/${t.id}/claim`, 303);
+  const r = await checkClaims(c.env, claim.id);
+  const after = await getClaim(c.env.DB, claim.id);
+  if (r.editKey) return page(c, claimMeta(t), <ClaimPage t={t} claim={null} isSns={t.kind === "sns"} editKey={r.editKey} />);
+  return page(c, claimMeta(t), <ClaimPage t={t} claim={after?.status === "pending" ? after : null} isSns={t.kind === "sns"} result={{ ok: false, message: after?.status === "expired" ? "That claim expired. Start a new one." : "Not verified yet. The proof was not found; try again once it is on chain or served." }} />);
+});
+app.get("/token/:id/profile", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.text("unknown token", 404);
+  const key = c.req.query("key") ?? "";
+  const p = key ? await profileByKey(c.env.DB, t.id, key) : null;
+  if (!p) return page(c, { ...claimMeta(t), path: `/token/${t.id}/profile` }, <ClaimPage t={t} claim={null} isSns={t.kind === "sns"} result={{ ok: false, message: "That edit key does not match a verified claim." }} />);
+  return page(c, { ...claimMeta(t), title: `${t.symbol} profile`, path: `/token/${t.id}/profile` }, <ProfileEditPage t={t} p={p} key={key} />);
+});
+app.post("/token/:id/profile", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.text("unknown token", 404);
+  const form = await c.req.parseBody({ all: true });
+  const key = String(form.key ?? "");
+  const r = await saveProfile(c.env.DB, t.id, key, form as Record<string, unknown>);
+  const p = await profileByKey(c.env.DB, t.id, key);
+  if (!p) return page(c, { ...claimMeta(t), path: `/token/${t.id}/profile` }, <ClaimPage t={t} claim={null} isSns={t.kind === "sns"} result={r} />);
+  return page(c, { ...claimMeta(t), title: `${t.symbol} profile`, path: `/token/${t.id}/profile` }, <ProfileEditPage t={t} p={p} key={key} result={r} />);
 });
 app.get("/token/:id/links", async (c) => {
   const t = await q.getToken(c.env.DB, c.req.param("id"));
@@ -981,6 +1030,7 @@ const JOBS = {
   "price-alerts": (env: Env) => evaluatePriceRules(env),
   "rug-signals": (env: Env) => evaluateRugSignals(env),
   launchpad: (env: Env) => collectLaunchpad(env),
+  claims: (env: Env) => checkClaims(env),
   "telegram-feeds": (env: Env) => telegramFeedsJob(env),
 } satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
@@ -1107,7 +1157,7 @@ export default {
           break;
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "price-alerts"); await runJob(env, "rug-signals"); await runJob(env, "telegram-feeds"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
-        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "launchpad"); await runJob(env, "life-support"); break;
+        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "launchpad"); await runJob(env, "claims"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); break;
       }
     };

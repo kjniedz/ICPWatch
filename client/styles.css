@@ -547,3 +547,5 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* Price alert form */
 .form label.sub { display: grid; gap: 4px; font-size: 12.5px; color: var(--text-2); }
 .form label.sub input, .form label.sub select { width: 100%; }
+
+.verified-profile { border-color: color-mix(in srgb, var(--up) 45%, var(--border)); margin-bottom: 12px; }
