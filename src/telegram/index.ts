@@ -39,7 +39,7 @@ export const COMMANDS: [string, string][] = [
   ["pricealert", "/pricealert CHAT above 0.12 (or below, move 10, volume 3)"],
   ["alerts", "List this chat's alerts"],
   ["unsub", "Remove an alert: /unsub 2"],
-  ["feed", "Group feeds: /feed sns on (sns, whales, launches, lifeline, moves)"],
+  ["feed", "Feeds: /feed sns on (sns, whales, launches, lifeline, moves); add @channel from a DM"],
   ["quiet", "Quiet hours for feeds: /quiet 23 7, or /quiet off"],
   ["tz", "Your UTC offset for quiet hours: /tz +2"],
   ["help", "All commands"],
@@ -49,9 +49,15 @@ export const COMMANDS: [string, string][] = [
 export async function setupTelegram(env: Env): Promise<{ ok: boolean; webhook?: unknown; commands?: unknown; error?: string }> {
   if (!env.TELEGRAM_BOT_TOKEN) return { ok: false, error: "TELEGRAM_BOT_TOKEN not set" };
   const url = `${env.SITE_URL}/telegram/webhook/${await webhookPath(env.TELEGRAM_BOT_TOKEN)}`;
-  const webhook = await tg(env, "setWebhook", { url, allowed_updates: ["message", "my_chat_member"], drop_pending_updates: true });
+  const webhook = await tg(env, "setWebhook", { url, allowed_updates: ["message", "channel_post", "my_chat_member"], drop_pending_updates: true });
   const commands = await tg(env, "setMyCommands", { commands: COMMANDS.map(([command, description]) => ({ command, description })) });
   return { ok: webhook.ok && commands.ok, webhook, commands };
+}
+
+/** What Telegram itself reports: bot identity, webhook url, pending updates, last error. */
+export async function telegramStatus(env: Env): Promise<unknown> {
+  const [me, hook] = await Promise.all([tg(env, "getMe", {}), tg(env, "getWebhookInfo", {})]);
+  return { me: me.result ?? me.description, webhook: hook.result ?? hook.description };
 }
 
 // ---- updates ---------------------------------------------------------------------------------------------
@@ -61,6 +67,8 @@ interface TgChat { id: number; type: string; title?: string; username?: string }
 export interface TgUpdate {
   update_id: number;
   message?: { message_id: number; from?: TgUser; chat: TgChat; date: number; text?: string; entities?: { type: string; offset: number; length: number }[] };
+  /** Posts in a channel the bot administers. Only channel admins can post, so these carry admin authority. */
+  channel_post?: { message_id: number; chat: TgChat; date: number; text?: string };
   my_chat_member?: { chat: TgChat; new_chat_member: { status: string } };
 }
 
@@ -72,9 +80,9 @@ async function touchChat(db: D1Database, chat: TgChat): Promise<void> {
     .bind(String(chat.id), chat.type, chat.title ?? chat.username ?? null, ts).run();
 }
 
-/** In groups, feed and quiet-hour settings are admin only. DMs always pass. */
+/** In groups, feed and quiet-hour settings are admin only. DMs always pass; so do channel posts (only admins can post there). */
 async function isAdmin(env: Env, chat: TgChat, user: TgUser | undefined): Promise<boolean> {
-  if (chat.type === "private") return true;
+  if (chat.type === "private" || chat.type === "channel") return true;
   if (!user) return false;
   const r = await tg(env, "getChatMember", { chat_id: chat.id, user_id: user.id });
   const status = (r.result as { status?: string } | undefined)?.status;
@@ -87,9 +95,10 @@ export async function handleUpdate(env: Env, u: TgUpdate): Promise<Reply | null>
   if (u.my_chat_member) {
     const st = u.my_chat_member.new_chat_member.status;
     if (st === "left" || st === "kicked") await db.prepare("DELETE FROM telegram_chats WHERE chat_id = ?1").bind(String(u.my_chat_member.chat.id)).run();
+    else await touchChat(db, u.my_chat_member.chat); // added to a group or channel: known from now on, so feeds can target it
     return null;
   }
-  const m = u.message;
+  const m = u.message ?? (u.channel_post ? { ...u.channel_post, from: undefined } : undefined);
   if (!m?.text || !m.chat) return null;
   await touchChat(db, m.chat);
   const chatId = String(m.chat.id);
@@ -103,7 +112,8 @@ export async function handleUpdate(env: Env, u: TgUpdate): Promise<Reply | null>
   try {
     switch (cmd) {
       case "start":
-        text = [`ICPWatch bot. Your chat id is ${chatId}.`, "", "Ask me about any Internet Computer token or canister, or subscribe this chat to alerts.", "", ...COMMANDS.map(([c, d]) => `/${c}: ${d}`), "", `${site}/telegram`].join("\n");
+        text = [`ICPWatch bot. Your chat id is ${chatId}.`, "", "Ask me about any Internet Computer token or canister, or subscribe this chat to alerts.", "", ...COMMANDS.map(([c, d]) => `/${c}: ${d}`), "",
+          ...(env.TELEGRAM_COMMUNITY ? [`Community: https://t.me/${env.TELEGRAM_COMMUNITY.replace(/^@/, "")}`] : []), ...(env.TELEGRAM_CHANNEL ? [`Alerts channel: https://t.me/${env.TELEGRAM_CHANNEL.replace(/^@/, "")}`] : []), `${site}/telegram`].join("\n");
         break;
       case "help":
         text = COMMANDS.map(([c, d]) => `/${c}: ${d}`).join("\n");
@@ -116,10 +126,15 @@ export async function handleUpdate(env: Env, u: TgUpdate): Promise<Reply | null>
       case "pricealert": text = await priceAlertReply(db, chatId, args); break;
       case "alerts": text = await alertsReply(db, chatId); break;
       case "unsub": text = await unsubReply(db, chatId, Number(args[0])); break;
-      case "feed":
-        if (!(await isAdmin(env, m.chat, m.from))) { text = "Only group admins can change feeds."; break; }
-        text = await feedReply(db, chatId, args[0], args[1]);
+      case "feed": {
+        // From a DM, an admin can point the command at a channel or group: /feed sns on @icpwatch_alerts
+        const target = m.chat.type === "private" && args[2]?.startsWith("@") ? await resolveTarget(env, db, args[2], m.from) : null;
+        if (target && "error" in target) { text = target.error; break; }
+        if (!target && !(await isAdmin(env, m.chat, m.from))) { text = "Only group admins can change feeds."; break; }
+        text = await feedReply(db, target ? target.chatId : chatId, args[0], args[1]);
+        if (target) text = `${target.title}: ${text}`;
         break;
+      }
       case "quiet":
         if (!(await isAdmin(env, m.chat, m.from))) { text = "Only group admins can change quiet hours."; break; }
         text = await quietReply(db, chatId, args);
@@ -135,6 +150,24 @@ export async function handleUpdate(env: Env, u: TgUpdate): Promise<Reply | null>
   }
   await sendTelegram(env, chatId, text);
   return { chat_id: chatId, text };
+}
+
+/** A channel or group named in a DM: the sender must administer it and the bot must be in it (as admin, for channels). */
+async function resolveTarget(env: Env, db: D1Database, handle: string, user: TgUser | undefined): Promise<{ chatId: string; title: string } | { error: string }> {
+  const chat = await tg(env, "getChat", { chat_id: handle });
+  const c = chat.result as TgChat | undefined;
+  if (!chat.ok || !c) return { error: `I cannot see ${handle}. Add @${env.TELEGRAM_BOT_NAME ?? "the bot"} to it first (as an admin, for a channel).` };
+  const meRes = await tg(env, "getMe", {});
+  const me = (meRes.result as TgUser | undefined)?.id;
+  const mine = me ? await tg(env, "getChatMember", { chat_id: c.id, user_id: me }) : { ok: false };
+  const myStatus = (mine.result as { status?: string } | undefined)?.status;
+  if (c.type === "channel" && myStatus !== "administrator") return { error: `${handle} is a channel, so the bot must be an administrator there to post. It is not yet.` };
+  if (!user) return { error: "Could not identify you." };
+  const theirs = await tg(env, "getChatMember", { chat_id: c.id, user_id: user.id });
+  const st = (theirs.result as { status?: string } | undefined)?.status;
+  if (st !== "creator" && st !== "administrator") return { error: `You are not an admin of ${handle}.` };
+  await touchChat(db, c);
+  return { chatId: String(c.id), title: c.title ?? handle };
 }
 
 // ---- command replies -------------------------------------------------------------------------------------

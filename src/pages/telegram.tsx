@@ -1,7 +1,7 @@
 import { COMMANDS } from "../telegram";
 import { Crumbs } from "../ui/components";
 
-export function TelegramPage({ live, botName }: { live: boolean; botName: string | null }) {
+export function TelegramPage({ live, botName, community, channel }: { live: boolean; botName: string | null; community: string | null; channel: string | null }) {
   const handle = botName ? `@${botName}` : "the ICPWatch bot";
   return (
     <div class="wrap page narrow">
@@ -14,6 +14,12 @@ export function TelegramPage({ live, botName }: { live: boolean; botName: string
       </div>
       {!live ? <div class="callout warn" style="margin-bottom:18px">The bot is being set up. Commands and group feeds below work as soon as it is live; subscriptions you create on the site with a Telegram chat id are stored and delivered then.</div> : null}
 
+      {community || channel ? (
+        <div class="grid-2" style="margin-bottom:18px">
+          {community ? <a class="card card-pad" href={`https://t.me/${community}`} rel="noopener" style="text-decoration:none"><b>Community group</b><div class="muted" style="font-size:13px;margin-top:4px">@{community}: talk ICP, ask the bot anything, live feeds in the room.</div></a> : null}
+          {channel ? <a class="card card-pad" href={`https://t.me/${channel}`} rel="noopener" style="text-decoration:none"><b>Alerts channel</b><div class="muted" style="font-size:13px;margin-top:4px">@{channel}: signal only. New SNS proposals, whale moves, canisters going low, launches. No chat.</div></a> : null}
+        </div>
+      ) : null}
       <div class="sec-head"><h2>1. Start a chat</h2></div>
       <div class="card card-pad prose" style="font-size:13.5px">
         <p>Open {botName ? <a class="link" href={`https://t.me/${botName}`} rel="noopener">{handle}</a> : handle} in Telegram and send <code>/start</code>. The reply includes your chat id, which you can paste into any alert form on this site. Or skip the forms and subscribe from the chat: <code>/watch CHAT</code>, <code>/pricealert CHAT above 0.12</code>.</p>
@@ -29,6 +35,7 @@ export function TelegramPage({ live, botName }: { live: boolean; botName: string
           <li><code>/feed lifeline on</code>: canisters going low on cycles or freezing</li>
           <li><code>/feed moves on</code>: price and volume alerts that fired for anyone</li>
         </ul>
+        <p>For a <b>channel</b>, add {handle} as an administrator (channels only let admins post), then from your DM with the bot send <code>/feed sns on @yourchannel</code>. The bot checks that you administer the channel before it listens.</p>
         <p>Feeds are batched, several items per message, and capped at 20 messages an hour per chat. <code>/quiet 23 7</code> holds feed posts overnight (set your offset with <code>/tz +2</code>) and sends one digest in the morning. Alerts this chat subscribed to directly are never held.</p>
       </div>
 

@@ -57,7 +57,7 @@ import { checkClaims, getClaim, profileByKey, saveProfile, startClaim, verifiedP
 import { collectLaunchpad, listLaunches } from "./launchpad";
 import { evaluateRugSignals } from "./alerts/rug";
 import { getSnapshot, listSnapshots, parseCsv, parseFilters, snapshotCsv, takeSnapshot } from "./snapshots";
-import { handleUpdate, setupTelegram, telegramFeedsJob, webhookPath, type TgUpdate } from "./telegram";
+import { handleUpdate, setupTelegram, telegramFeedsJob, telegramStatus, webhookPath, type TgUpdate } from "./telegram";
 import { createRules, describeRule, evaluatePriceRules, parseRules, recentPriceEvents } from "./alerts/price";
 import { sendMessage } from "./alerts/notify";
 import { collectTokenMeta, descriptionFor, linksFor, pendingLinks, reviewLink, submitLink } from "./meta";
@@ -76,7 +76,7 @@ type C = Context<{ Bindings: Env }>;
 const app = new Hono<{ Bindings: Env }>();
 
 const page = (c: C, meta: PageMeta, body: Child, status: 200 | 404 = 200) =>
-  c.html(<Layout meta={meta}>{body}</Layout>, status, { "cache-control": "public, max-age=0, s-maxage=20, stale-while-revalidate=60" });
+  c.html(<Layout meta={meta} links={{ telegram: c.env.TELEGRAM_COMMUNITY ?? null, telegramBot: c.env.TELEGRAM_BOT_NAME ?? null }}>{body}</Layout>, status, { "cache-control": "public, max-age=0, s-maxage=20, stale-while-revalidate=60" });
 
 // Edge cache for anonymous GET pages: a popular page is rendered once per 20 seconds per colo.
 app.use("*", async (c, next) => {
@@ -287,7 +287,7 @@ app.get("/lifeline/calculator", async (c) => {
   return page(c, { title: "Cycles cost calculator: what a canister costs to run", path: "/lifeline/calculator", section: "lifeline", description: "Estimate Internet Computer canister costs from the fee table, or use the burn ICPWatch measured on a live canister. Cycles, ICP at the live XDR rate, and USD, per day, month, and year." },
     <CalculatorPage input={input} lines={estimate(input)} measured={measured ?? null} rate={rate} icpUsd={icp?.price_usd ?? null} canisters={watched} />);
 });
-app.get("/telegram", (c) => page(c, { title: "ICPWatch Telegram bot", path: "/telegram", section: "lifeline", description: "Prices, canister health, SNS treasuries, and alerts for the Internet Computer in Telegram, with group feeds, rate limits, and quiet hours." }, <TelegramPage live={!!c.env.TELEGRAM_BOT_TOKEN} botName={c.env.TELEGRAM_BOT_NAME ?? null} />));
+app.get("/telegram", (c) => page(c, { title: "ICPWatch Telegram bot", path: "/telegram", section: "lifeline", description: "Prices, canister health, SNS treasuries, and alerts for the Internet Computer in Telegram, with group feeds, rate limits, and quiet hours." }, <TelegramPage live={!!c.env.TELEGRAM_BOT_TOKEN} botName={c.env.TELEGRAM_BOT_NAME ?? null} community={c.env.TELEGRAM_COMMUNITY ?? null} channel={c.env.TELEGRAM_CHANNEL ?? null} />));
 app.post("/telegram/webhook/:path", async (c) => {
   if (!c.env.TELEGRAM_BOT_TOKEN || c.req.param("path") !== (await webhookPath(c.env.TELEGRAM_BOT_TOKEN))) return c.text("not found", 404);
   const update = (await c.req.json().catch(() => null)) as TgUpdate | null;
@@ -295,6 +295,10 @@ app.post("/telegram/webhook/:path", async (c) => {
   // Always 200 to Telegram; a thrown error would make it retry the same update forever.
   c.executionCtx.waitUntil(handleUpdate(c.env, update).catch((e) => console.error("telegram update", e)));
   return c.text("ok");
+});
+app.get("/admin/telegram/status", async (c) => {
+  if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+  return c.json(await telegramStatus(c.env));
 });
 app.post("/admin/telegram/setup", async (c) => {
   if (!authed(c)) return c.json({ error: "unauthorized" }, 401);

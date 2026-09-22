@@ -37,7 +37,9 @@ const speculation = JSON.stringify({
   prefetch: [{ where: { and: [{ href_matches: "/*" }, { not: { href_matches: "/api/*" } }, { not: { selector_matches: "[data-no-prefetch]" } }] }, eagerness: "moderate" }],
 });
 
-export function Layout({ meta, children }: { meta: PageMeta; children?: Child }) {
+export interface SiteLinks { telegram?: string | null; telegramBot?: string | null }
+
+export function Layout({ meta, children, links }: { meta: PageMeta; children?: Child; links?: SiteLinks }) {
   const url = SITE + meta.path;
   const fullTitle = meta.path === "/" ? meta.title : `${meta.title} | ICPWatch`;
   return (
@@ -155,9 +157,10 @@ function Footer() {
           </a>
           <p class="blurb">Real-time markets, network activity and canister health for the Internet Computer ecosystem.</p>
           <div class="soc">
-            {socials.map(([abbr, label, href]) => (
-              <a href={href ?? "/contact"} rel={href ? "noopener" : undefined} aria-label={label}>{abbr}</a>
-            ))}
+            {socials.map(([abbr, label, href]) => {
+              const h = abbr === "TG" ? (links?.telegram ? `https://t.me/${links.telegram}` : links?.telegramBot ? `https://t.me/${links.telegramBot}` : href) : href;
+              return <a href={h ?? "/contact"} rel={h ? "noopener" : undefined} aria-label={label}>{abbr}</a>;
+            })}
           </div>
         </div>
         {footerCols.map(([title, links]) => (

@@ -14,6 +14,9 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   /** Bot username without @, for links on the setup page. */
   TELEGRAM_BOT_NAME?: string;
+  /** Public community group and alerts channel handles, without @, for cross-links. */
+  TELEGRAM_COMMUNITY?: string;
+  TELEGRAM_CHANNEL?: string;
   /** CoinGecko demo key for token links. Without it the keyless tier is shared with every other Worker and is usually exhausted. */
   COINGECKO_API_KEY?: string;
   /** Life support spends real ICP. It only goes live when this is exactly "true" AND an identity is set AND the DB kill switch is released. */
