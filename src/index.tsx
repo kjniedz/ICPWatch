@@ -10,8 +10,8 @@ import { collectMarkets } from "./collectors/markets";
 import { collectNetwork } from "./collectors/network";
 import { collectSns } from "./collectors/sns";
 import * as q from "./db/queries";
-import { indexJob } from "./indexer";
-import { holderStats, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
+import { indexJob, indexTick, reconcile } from "./indexer";
+import { holderStats, indexFailures, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
 import { now } from "./lib/format";
 import { ALERT_TYPES, EVENT_TYPES } from "./lib/health";
@@ -226,7 +226,7 @@ app.get("/canister/:id", async (c) => {
 async function holdersFor(env: Env, t: q.TokenRow) {
   const prog = await indexProgress(env.DB, t.id).catch(() => null);
   // Our index is only shown once it is complete AND has reconciled against total supply in production.
-  if (prog?.complete && (prog as { trusted?: boolean }).trusted === true) {
+  if (prog?.trusted) {
     const [top, stats] = await Promise.all([topHolders(env.DB, t.id, { limit: 25, totalSupplyRaw: t.total_supply }), holderStats(env.DB, t.id, t.total_supply)]);
     return {
       rows: top.holders.map((h) => ({ account: h.account, balance: h.balance, share: h.share })), total: stats.holders, top10: stats.top10Share,
@@ -417,7 +417,10 @@ const content: [string, string, string, FC][] = [
 ];
 for (const [path, title, description, Body] of content) app.get(path, (c) => page(c, { title, description, path, section: "none" }, <Body />));
 
-app.get("/status", async (c) => page(c, { title: "Status", path: "/status", section: "none", description: "ICPWatch collector status and data freshness." }, <StatusPage runs={await q.lastRuns(c.env.DB)} />));
+app.get("/status", async (c) => {
+  const [runs, overview, failures] = await Promise.all([q.lastRuns(c.env.DB), indexOverview(c.env.DB), indexFailures(c.env.DB)]);
+  return page(c, { title: "Status", path: "/status", section: "none", description: "ICPWatch collector status and data freshness." }, <StatusPage runs={runs} index={{ overview, failures }} />);
+});
 
 for (const kind of ["listing", "contact"] as const) {
   const path = kind === "listing" ? "/listing-request" : "/contact";
@@ -506,7 +509,8 @@ api.get("/token/:id/prices", async (c) => {
   return c.json({ unit: "usd", source: "DEX candles", points: rows.map((r) => ({ t: r.ts, o: r.open ?? r.price_usd, h: r.high ?? r.price_usd, l: r.low ?? r.price_usd, c: r.price_usd })) });
 });
 api.get("/pools", async (c) => c.json({ pools: await q.topPools(c.env.DB, 300) }));
-api.get("/indexer", async (c) => c.json({ overview: await indexOverview(c.env.DB), source: "ICPWatch block index" }));
+api.get("/indexer", async (c) => c.json({ overview: await indexOverview(c.env.DB), failures: await indexFailures(c.env.DB), source: "ICPWatch block index" }));
+api.get("/indexer/reconcile/:ledger", async (c) => c.json(await reconcile(c.env, c.req.param("ledger"))));
 api.get("/token/:id/holders", async (c) => {
   const t = await q.getToken(c.env.DB, c.req.param("id"));
   return t ? c.json(await holdersFor(c.env, t)) : c.json({ error: "unknown token" }, 404);
@@ -564,10 +568,12 @@ const JOBS = {
   rollup: (env: Env) => rollupLifeline(env),
   sns: (env: Env) => collectSns(env),
   indexer: (env: Env) => indexJob(env),
+  // One ledger only, used by the admin route below and local testing. Default 45 s budget.
+  "indexer-one": (env: Env, ledger?: string) => indexTick(env, { budgetMs: 45_000, ledgers: ledger ? [ledger] : [], maxReconciles: 1 }).then(({ ledgers, ...s }) => ({ ...s, failed: ledgers.filter((l) => l.error).map((l) => ({ ledger: l.ledger, error: l.error })) })),
   // Dry run unless explicitly enabled. Even then the engine's own gate (identity, kill switch, caps) decides.
   "life-support": (env: Env) => lifeSupportTick(env, { dryRun: env.LIFE_SUPPORT_ENABLED !== "true" }),
   history: (env: Env) => runHistory(env),
-} satisfies Record<string, (env: Env) => Promise<unknown>>;
+} satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
 /**
  * Upgrade and controller history from on-chain canister_info, plus the security events it yields.
@@ -587,10 +593,10 @@ async function runHistory(env: Env) {
   return { checked: stats.checked, inserted: stats.inserted, errors: stats.errors, events: stats.events.length, notified };
 }
 
-async function runJob(env: Env, job: keyof typeof JOBS): Promise<{ ok: boolean; stats?: unknown; error?: string }> {
+async function runJob(env: Env, job: keyof typeof JOBS, arg?: string): Promise<{ ok: boolean; stats?: unknown; error?: string }> {
   const started = Date.now();
   try {
-    const stats = await JOBS[job](env);
+    const stats = await JOBS[job](env, arg);
     await env.DB.prepare("INSERT INTO runs (job, started_at, ms, ok, stats) VALUES (?, ?, ?, 1, ?)").bind(job.replace("-full", ""), Math.floor(started / 1000), Date.now() - started, JSON.stringify(stats)).run();
     return { ok: true, stats };
   } catch (e) {
@@ -607,7 +613,7 @@ app.post("/admin/run/:job", async (c) => {
   if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
   const job = c.req.param("job") as keyof typeof JOBS;
   if (!(job in JOBS)) return c.json({ error: "unknown job", jobs: Object.keys(JOBS) }, 400);
-  return c.json(await runJob(c.env, job));
+  return c.json(await runJob(c.env, job, c.req.query("ledger")));
 });
 
 // Life support administration. Everything here is bearer-authed, logged by the engine, and safe by default.

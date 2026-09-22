@@ -41,13 +41,13 @@ app.get("/account", async (c) => c.json(await q.accountHoldings(c.env.DB, c.req.
 app.get("/bench", async (c) => {
   const ledger = c.req.query("ledger") ?? "";
   const start = Number(c.req.query("start") ?? 0);
-  const archives = await ledgerArchives(c.env.IC_HOST, ledger, newMeter());
+  const archives = await ledgerArchives(c.env.IC_HOST, ledger, "tx", Number(c.req.query("tip") ?? 0), newMeter());
   const a = archives.find((x) => x.start <= start && start <= x.end);
   if (!a) return c.json({ error: "start is not in an archive", archives }, 400);
   const runs = [];
   for (let i = 0; i < 5; i++) {
     const meter = newMeter();
-    const txs = await archivePage(c.env.IC_HOST, a.canister, "get_transactions", start + i * 2000, 2000, meter);
+    const txs = await archivePage(c.env.IC_HOST, a.canister, "tx", start + i * 2000, 2000, meter);
     const t0 = Date.now();
     const state = newChunk(start + i * 2000, null);
     applyBlocks(state, txs, 0n);

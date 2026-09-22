@@ -294,7 +294,17 @@ export function LifeSupportPage({ items, frozen, adopt }: {
   );
 }
 
-export function StatusPage({ runs }: { runs: { job: string; started_at: number; ms: number | null; ok: number; stats: string | null; error: string | null }[] }) {
+export interface IndexStatus {
+  overview: { ledgers: number; complete: number; failing: number; blocksIndexed: number; blocksTotal: number; percent: number };
+  failures: { ledger: string; symbol: string | null; status: string; fail_reason: string | null; fail_canister: string | null; failed_since: number | null; fails: number; retry_at: number; error: string | null }[];
+}
+
+const FAIL_TEXT: Record<string, string> = {
+  frozen: "the ledger is frozen (out of cycles)", uninstalled: "the ledger was uninstalled", no_get_transactions: "custom ledger without a block API",
+  archive_gap: "a block range is held by no canister", archive_unreachable: "an archive is frozen or unreachable", decode_error: "blocks in a shape we cannot read", other: "other",
+};
+
+export function StatusPage({ runs, index }: { runs: { job: string; started_at: number; ms: number | null; ok: number; stats: string | null; error: string | null }[]; index?: IndexStatus }) {
   const allOk = runs.length > 0 && runs.every((r) => r.ok && now() - r.started_at < 3 * 3600);
   return (
     <div class="wrap page narrow">
@@ -319,6 +329,27 @@ export function StatusPage({ runs }: { runs: { job: string; started_at: number; 
         </table>
         {runs.length ? null : <Empty>No collector has run yet. {ago(null)}</Empty>}
       </div>
+      {index ? (
+        <>
+          <div class="sec-head"><h2>Block index</h2><span class="muted" style="font-size:12px">{index.overview.complete} of {index.overview.ledgers} ledgers complete &middot; {index.overview.percent}% of known blocks replayed</span></div>
+          <div class="card tbl-wrap">
+            <table class="tbl">
+              <thead><tr><th>Ledger</th><th>Why it cannot be indexed</th><th class="hide-m">Canister at fault</th><th>Since</th></tr></thead>
+              <tbody>
+                {index.failures.map((f) => (
+                  <tr>
+                    <td><a href={`/token/${f.ledger}`} style="font-weight:600">{f.symbol ?? f.ledger.slice(0, 11)}</a></td>
+                    <td>{FAIL_TEXT[f.fail_reason ?? "other"] ?? f.fail_reason}</td>
+                    <td class="hide-m mono" style="font-size:11px">{f.fail_canister && f.fail_canister !== f.ledger ? <a href={`/canister/${f.fail_canister}`}>{f.fail_canister}</a> : ""}</td>
+                    <td>{f.failed_since ? shortDate(f.failed_since) : "n/a"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {index.failures.length ? null : <Empty>Every probed ledger is indexable.</Empty>}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

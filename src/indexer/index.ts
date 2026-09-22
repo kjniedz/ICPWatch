@@ -1,24 +1,35 @@
 // Block indexer orchestration. One call to indexTick does a bounded amount of work inside a cron
 // tick and leaves a durable cursor behind, so the next tick resumes exactly where this one stopped.
 //
-// A tick has three phases:
-//   probe     listed tokens without index state get one: tip, fee, decimals, large-transfer threshold.
-//   tail      ledgers that are caught up (or nearly) are polled for new blocks, six ledgers at a time,
-//             one IC query each. Quiet ledgers are polled less often (next_check_at).
-//   backfill  ledgers with a backlog are replayed one at a time with six parallel block fetches,
-//             smallest backlog first, until the time or subrequest budget is spent.
-// Replay reads archives directly (ledger.archives() gives the ranges) and falls back to following the
-// ledger's archived_transactions callbacks. See store.ts for the commit protocol.
-//
-// ICRC ledgers only. TODO: the ICP ledger needs its own block reader (see ledger.ts).
+// A tick has four phases:
+//   probe      listed tokens without index state get one: which block method works, tip, fee, decimals,
+//              large-transfer threshold. The ICP ledger is its own kind with its own block format.
+//   tail       ledgers that are caught up (or nearly) are polled for new blocks, six ledgers at a time,
+//              one IC query each. Quiet ledgers are polled less often (next_check_at).
+//   backfill   ledgers with a backlog are replayed one at a time with six parallel block fetches,
+//              smallest backlog first, until the time or subrequest budget is spent. The ICP ledger
+//              (38M blocks) goes last so it never starves the ICRC ledgers.
+//   reconcile  a caught-up ledger is checked against icrc1_total_supply. Holder data is only marked
+//              trusted after an exact match. A ledger replayed with an older balance algorithm that
+//              fails the check is wiped and replayed once with the current one.
+// See store.ts for the commit protocol and failures.ts for the failure taxonomy.
 import type { Env } from "../env";
-import { ICP_LEDGER, classifyReject, pool } from "../lib/ic";
-import { applyBlocks, defaultBigThreshold, newChunk, planCommit, type ChunkState, type Tx } from "./core";
-import { IcRejectError, archivePage, ledgerArchives, ledgerDecimals, ledgerFee, ledgerPage, ledgerRange, ledgerSupply, newMeter, type ArchiveRange, type CallMeter } from "./ledger";
+import { ICP_LEDGER, pool } from "../lib/ic";
+import {
+  UnknownFeeColError, applyBlocks, defaultBigThreshold, feeColsJson, feeSink, newChunk, parseFeeCols, planCommit, supplyDeltas, type ChunkState, type Tx,
+} from "./core";
+import { classifyFailure } from "./failures";
+import {
+  ICRC_SOURCES, archivePage, ledgerArchives, ledgerDecimals, ledgerFee, ledgerPage, ledgerRange, ledgerSupply, newMeter,
+  type ArchiveRange, type BlockSource, type CallMeter, type LedgerPage,
+} from "./ledger";
 import {
   CursorMovedError, MAX_ACCOUNTS_PER_CHUNK, MAX_BIG_PER_CHUNK, commitChunk, dueForBackfill, dueForTail, getState, insertState, loadExisting, newDbMeter,
-  recordError, setLedgerParams, tokenSeed, touchState, unprobedTokens, type DbMeter, type IdxStateRow, type TokenSeed,
+  recordError, resetForReplay, saveReconcile, setLedgerParams, sumBalances, tokenSeed, touchState, unprobedTokens, type DbMeter, type IdxStateRow, type LedgerKind, type TokenSeed,
 } from "./store";
+
+/** Balance rules version. 1 treated every fee as burned. 2 credits fee collectors (ICRC-3 fee_col, ICRC-107). */
+export const ALGO_VERSION = 2;
 
 export interface IndexOptions {
   /** Wall-clock budget for the whole tick. The last slice is reserved for committing. */
@@ -33,11 +44,15 @@ export interface IndexOptions {
   maxSubrequests?: number;
   /** New ledgers probed per tick. Default 12. */
   maxProbes?: number;
+  /** Reconcile checks per tick (each reads every balance row of the ledger). Default 3. */
+  maxReconciles?: number;
+  /** Include the ICP ledger. Default true. */
+  icp?: boolean;
 }
 
-export interface LedgerTickStats { ledger: string; phase: "tail" | "backfill"; from: number; to: number; tip: number; blocks: number; accounts: number; commits: number; ms: number; error?: string }
+export interface LedgerTickStats { ledger: string; phase: "tail" | "backfill"; from: number; to: number; tip: number; blocks: number; accounts: number; commits: number; ms: number; error?: string; reconciled?: boolean }
 export interface IndexStats {
-  ms: number; probed: number; tailed: number; backfilled: number; blocks: number; accountsWritten: number; bigTransfers: number;
+  ms: number; probed: number; tailed: number; backfilled: number; reconciled: number; replayed: number; blocks: number; accountsWritten: number; bigTransfers: number;
   rowsWritten: number; rowsRead: number; icCalls: number; d1Calls: number; fetchMs: number; decodeMs: number; commitMs: number; bytes: number;
   errors: number; skipped: number; ledgers: LedgerTickStats[];
 }
@@ -48,27 +63,31 @@ const TAIL_MAX = 2 * PER_CALL; // a backlog up to this size is handled in the ta
 const MAX_AHEAD = 24; // planned-but-unapplied batches (in flight or buffered) at most
 const HEDGE_AFTER_MS = 2000; // re-request the head-of-line range when its answer takes longer than this
 const MAX_BLOCKS_PER_CHUNK = 400_000;
+const RECONCILE_OK_EVERY = 86_400; // a passing ledger is re-checked daily
+const RECONCILE_RETRY = 6 * 3600; // a failing or undecidable one, every six hours
 const now = () => Math.floor(Date.now() / 1000);
 
-interface Tick { env: Env; opts: IndexOptions; deadline: number; ic: CallMeter; dbm: DbMeter; stats: IndexStats; maxSub: number }
+interface Tick { env: Env; opts: IndexOptions; deadline: number; ic: CallMeter; dbm: DbMeter; stats: IndexStats; maxSub: number; reconciles: number }
 const spent = (t: Tick) => t.ic.icCalls + t.dbm.d1Calls;
+const sourceOf = (row: IdxStateRow): BlockSource => (row.kind === "icp" ? "icp" : ((row.source as BlockSource | null) ?? "tx"));
 
 export async function indexTick(env: Env, opts: IndexOptions): Promise<IndexStats> {
   const started = Date.now();
   const stats: IndexStats = {
-    ms: 0, probed: 0, tailed: 0, backfilled: 0, blocks: 0, accountsWritten: 0, bigTransfers: 0, rowsWritten: 0, rowsRead: 0, icCalls: 0, d1Calls: 0,
+    ms: 0, probed: 0, tailed: 0, backfilled: 0, reconciled: 0, replayed: 0, blocks: 0, accountsWritten: 0, bigTransfers: 0, rowsWritten: 0, rowsRead: 0, icCalls: 0, d1Calls: 0,
     fetchMs: 0, decodeMs: 0, commitMs: 0, bytes: 0, errors: 0, skipped: 0, ledgers: [],
   };
-  const tick: Tick = { env, opts, deadline: started + opts.budgetMs, ic: newMeter(), dbm: newDbMeter(), stats, maxSub: opts.maxSubrequests ?? 800 };
+  const tick: Tick = { env, opts, deadline: started + opts.budgetMs, ic: newMeter(), dbm: newDbMeter(), stats, maxSub: opts.maxSubrequests ?? 800, reconciles: 0 };
   tick.ic.deadline = tick.deadline;
   const maxLedgers = opts.maxLedgersPerTick ?? 60;
   const ts = now();
+  const withIcp = opts.icp !== false;
 
   // ---- probe ------------------------------------------------------------------------------------
   let forced: IdxStateRow[] | null = null;
   if (opts.ledgers) {
     forced = [];
-    for (const ledger of opts.ledgers.filter((l) => l !== ICP_LEDGER)) {
+    for (const ledger of opts.ledgers) {
       let row = await getState(env.DB, ledger);
       if (!row || row.default_fee == null) {
         await probeLedger(tick, (await tokenSeed(env.DB, ledger)) ?? { id: ledger, decimals: null, fee: null, total_supply: null });
@@ -77,17 +96,20 @@ export async function indexTick(env: Env, opts: IndexOptions): Promise<IndexStat
       if (row && row.default_fee != null) forced.push(row);
     }
   } else {
-    const fresh = await unprobedTokens(env.DB, ICP_LEDGER, opts.maxProbes ?? 12);
+    const fresh = await unprobedTokens(env.DB, withIcp ? "" : ICP_LEDGER, opts.maxProbes ?? 12);
     await pool(fresh, FETCH_CONCURRENCY, (t) => probeLedger(tick, t));
   }
 
   // ---- pick -------------------------------------------------------------------------------------
   const tails = forced ? forced.filter((r) => r.tip - r.next_block <= TAIL_MAX) : await dueForTail(env.DB, ts, TAIL_MAX, maxLedgers);
-  const backlog = (forced ? forced.filter((r) => r.tip - r.next_block > TAIL_MAX) : await dueForBackfill(env.DB, ts, TAIL_MAX, maxLedgers)).sort((a, b) => a.tip - a.next_block - (b.tip - b.next_block));
+  const backlog = (forced ? forced.filter((r) => r.tip - r.next_block > TAIL_MAX) : await dueForBackfill(env.DB, ts, TAIL_MAX, maxLedgers))
+    .filter((r) => withIcp || r.kind !== "icp")
+    // Smallest backlog first, and the ICP ledger after every ICRC ledger whatever its backlog.
+    .sort((a, b) => (a.kind === "icp" ? 1 : 0) - (b.kind === "icp" ? 1 : 0) || a.tip - a.next_block - (b.tip - b.next_block));
 
   // ---- tail: many ledgers, one connection each. Leaves at least half the budget to a waiting backlog.
   const tailDeadline = backlog.length ? started + opts.budgetMs / 2 : tick.deadline;
-  await pool(tails, FETCH_CONCURRENCY, async (row) => {
+  await pool(tails.filter((r) => withIcp || r.kind !== "icp"), FETCH_CONCURRENCY, async (row) => {
     if (Date.now() >= tailDeadline || spent(tick) >= tick.maxSub) return void stats.skipped++;
     await syncLedger(tick, row, "tail", 1, tailDeadline);
   });
@@ -140,32 +162,51 @@ export async function indexJob(env: Env, budgetMs = 45_000): Promise<Omit<IndexS
 /** Time kept back at the end of the budget for the final read + commit of the chunk in memory. */
 const reserveMs = (t: Tick) => Math.min(6000, t.opts.budgetMs * 0.2);
 
+/**
+ * First contact with a ledger: which block method it speaks (get_blocks with fee collector data is
+ * preferred, then get_transactions, then icrc3_get_blocks), its tip, fee, decimals, and the large-transfer
+ * threshold. The ICP ledger is recognised by id.
+ */
 async function probeLedger(tick: Tick, seed: TokenSeed, fails = 0): Promise<void> {
   const host = tick.env.IC_HOST;
+  const kind: LedgerKind = seed.id === ICP_LEDGER ? "icp" : "icrc";
   try {
-    const [head, fee, decimals] = await Promise.all([
-      ledgerPage(host, seed.id, 0, 0, tick.ic),
-      ledgerFee(host, seed.id, tick.ic),
+    let head: LedgerPage | null = null;
+    let source: BlockSource = "icp";
+    if (kind === "icp") head = await ledgerPage(host, seed.id, "icp", 0, 0, tick.ic);
+    else {
+      let lastNoMethod: unknown = null;
+      for (const s of ICRC_SOURCES) {
+        try {
+          head = await ledgerPage(host, seed.id, s, 0, 0, tick.ic);
+          source = s;
+          break;
+        } catch (e) {
+          if (!classifyFailure(e, seed.id).noMethod) throw e;
+          lastNoMethod = e;
+        }
+      }
+      if (!head) throw lastNoMethod ?? new Error("no block method answered");
+    }
+    const [fee, decimals] = await Promise.all([
+      seed.fee != null && kind === "icp" ? BigInt(seed.fee) : ledgerFee(host, seed.id, tick.ic),
       seed.decimals != null ? seed.decimals : ledgerDecimals(host, seed.id, tick.ic),
     ]);
     const supply = seed.total_supply && seed.total_supply !== "0" ? BigInt(seed.total_supply) : await ledgerSupply(host, seed.id, tick.ic);
     const big = tick.opts.minAmountRaw?.[seed.id] ?? defaultBigThreshold(supply);
-    await insertState(tick.env.DB, { ledger: seed.id, tip: head.tip, decimals, defaultFee: fee.toString(), bigMinRaw: big != null ? big.toString() : null, now: now() }, tick.dbm);
+    await insertState(tick.env.DB, { ledger: seed.id, tip: head.tip, decimals, defaultFee: fee.toString(), bigMinRaw: big != null ? big.toString() : null, now: now(), kind, source, algoVersion: ALGO_VERSION }, tick.dbm);
     tick.stats.probed++;
   } catch (e) {
     tick.stats.errors++;
-    await fail(tick, seed.id, e, fails);
+    await fail(tick, seed.id, e, fails, kind);
   }
 }
 
-async function fail(tick: Tick, ledger: string, e: unknown, fails: number): Promise<string> {
+async function fail(tick: Tick, ledger: string, e: unknown, fails: number, kind: LedgerKind): Promise<string> {
   const message = e instanceof Error ? e.message : String(e);
-  const code = e instanceof IcRejectError ? e.code : null;
-  const down = classifyReject(code, message);
-  // IC0536: the canister runs but has no get_transactions, so it is not a DFINITY-style ICRC ledger.
-  const unsupported = code === "IC0536" || /has no query method|method .* not found/i.test(message);
-  const text = `${down ? `${down}: ` : ""}${message}`;
-  await recordError(tick.env.DB, ledger, text, now(), { unsupported, fails }, tick.dbm);
+  const f = classifyFailure(e, ledger);
+  const text = `${f.reason}${f.canister && f.canister !== ledger ? ` (${f.canister})` : ""}: ${message}`;
+  await recordError(tick.env.DB, ledger, text, now(), { reason: f.reason, hopeless: f.hopeless, canister: f.canister, fails, kind }, tick.dbm);
   console.warn("indexer", ledger, text.slice(0, 200));
   return text;
 }
@@ -185,6 +226,8 @@ async function syncLedger(tick: Tick, row: IdxStateRow, phase: "tail" | "backfil
   }
   const host = env.IC_HOST;
   const ledger = row.ledger;
+  const kind = row.kind;
+  const source = sourceOf(row);
   const t0 = Date.now();
   const ls: LedgerTickStats = { ledger, phase, from: row.next_block, to: row.next_block, tip: row.tip, blocks: 0, accounts: 0, commits: 0, ms: 0 };
   tick.stats.ledgers.push(ls);
@@ -204,10 +247,11 @@ async function syncLedger(tick: Tick, row: IdxStateRow, phase: "tail" | "backfil
   const minBig = row.big_min_raw != null ? BigInt(row.big_min_raw) : null;
   const defaultFee = BigInt(row.default_fee ?? "0");
 
-  let state: ChunkState = newChunk(row.next_block, minBig, row.last_block_ts ?? 0);
+  let state: ChunkState = newChunk(row.next_block, minBig, row.last_block_ts ?? 0, parseFeeCols(row.fee_cols));
   let holders = row.holders;
   let accounts = row.accounts;
   let tip = row.tip;
+  const totals = { minted: BigInt(row.minted_raw || "0"), burned: BigInt(row.burned_raw || "0"), feesBurned: BigInt(row.fees_burned_raw || "0"), feesCollected: BigInt(row.fees_collected_raw || "0") };
 
   /** Write the chunk in memory (or just refresh the state row when it is empty) and start a new one. */
   const commit = async () => {
@@ -216,29 +260,53 @@ async function syncLedger(tick: Tick, row: IdxStateRow, phase: "tail" | "backfil
     const lastBlockTs = state.totals.blocks ? state.lastTs : row.last_block_ts;
     // Poll quiet ledgers less often: a twentieth of the time since the last block, between 4 minutes and 1 hour.
     const nextCheckAt = synced ? ts + Math.round(Math.min(3600, Math.max(240, (ts - (lastBlockTs ?? ts)) / 20))) : 0;
-    const cur = { ledger, expected: state.startBlock, next: state.nextBlock, tip, status: synced ? "synced" : "syncing", now: ts, nextCheckAt, lastBlockTs, completed: synced };
+    const next = { minted: totals.minted + state.totals.minted, burned: totals.burned + state.totals.burned, feesBurned: totals.feesBurned + state.totals.feesBurned, feesCollected: totals.feesCollected + state.totals.feesCollected };
+    const cur = {
+      ledger, expected: state.startBlock, next: state.nextBlock, tip, status: synced ? "synced" : "syncing", now: ts, nextCheckAt, lastBlockTs, completed: synced, kind,
+      totals: { minted: next.minted.toString(), burned: next.burned.toString(), feesBurned: next.feesBurned.toString(), feesCollected: next.feesCollected.toString() },
+      feeCols: state.feeCols.dirty ? feeColsJson(state.feeCols) : undefined,
+    };
     if (!state.totals.blocks) {
       await touchState(env.DB, cur, dbm);
     } else {
-      const existing = await loadExisting(env.DB, ledger, [...state.accounts.keys()], dbm);
+      const existing = await loadExisting(env.DB, ledger, [...state.accounts.keys()], dbm, kind);
       const plan = planCommit(state, existing, { holders, accounts }, row.decimals);
       await commitChunk(env.DB, plan, cur, dbm);
       holders = plan.holdersAfter;
       accounts = plan.accountsAfter;
+      Object.assign(totals, next);
       ls.commits++;
       ls.accounts += plan.upserts.length;
       tick.stats.accountsWritten += plan.upserts.length;
       tick.stats.bigTransfers += plan.big.length;
     }
     row.last_block_ts = lastBlockTs;
-    state = newChunk(state.nextBlock, minBig, state.lastTs);
+    state.feeCols.dirty = false;
+    state = newChunk(state.nextBlock, minBig, state.lastTs, state.feeCols);
   };
 
-  const apply = (txs: Tx[], firstIndex: number) => {
-    const n = applyBlocks(state, txs, defaultFee, firstIndex);
-    ls.blocks += n;
-    tick.stats.blocks += n;
-    ls.to = state.nextBlock;
+  /**
+   * Fold a batch. A fee_col_block reference to a block outside the batch (a collector declared long
+   * before the current chunk) is resolved by fetching that one block and registering it, then retrying.
+   */
+  const apply = async (txs: Tx[], firstIndex: number) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const n = applyBlocks(state, txs, defaultFee, firstIndex);
+        ls.blocks += n;
+        tick.stats.blocks += n;
+        ls.to = state.nextBlock;
+        return;
+      } catch (e) {
+        if (!(e instanceof UnknownFeeColError) || attempt >= 3) throw e;
+        for (const ref of e.blocks.slice(0, 8)) {
+          const one = await ledgerRange(host, ledger, source, ref, 1, ic);
+          const tx = one.txs[0];
+          if (!tx) throw new Error(`fee collector block ${ref} could not be read`);
+          feeSink(state.feeCols, tx, ref);
+        }
+      }
+    }
   };
   const chunkFull = () => state.accounts.size >= MAX_ACCOUNTS_PER_CHUNK || state.totals.blocks >= MAX_BLOCKS_PER_CHUNK || state.big.length >= MAX_BIG_PER_CHUNK;
 
@@ -246,14 +314,14 @@ async function syncLedger(tick: Tick, row: IdxStateRow, phase: "tail" | "backfil
   const inflight = new Map<number, Promise<void>>();
   try {
     // One call gives the tip and, for a caught-up ledger, the new blocks as well.
-    const first = await ledgerPage(host, ledger, state.nextBlock, PER_CALL, ic);
+    const first = await ledgerPage(host, ledger, source, state.nextBlock, PER_CALL, ic);
     tip = first.tip;
     ls.tip = tip;
     if (tip < state.nextBlock) throw new Error(`ledger tip ${tip} is below the indexed cursor ${state.nextBlock}: the ledger was reinstalled, reset this index`);
     let archives: ArchiveRange[] = [];
-    if (first.archived.length || first.firstIndex > state.nextBlock) archives = await ledgerArchives(host, ledger, ic);
-    if (!first.archived.length && first.inlineStart === state.nextBlock) apply(first.txs, first.inlineStart);
-    else if (!archives.length) apply((await ledgerRange(host, ledger, state.nextBlock, PER_CALL, ic, first)).txs, state.nextBlock);
+    if (first.archived.length || (first.firstIndex ?? state.nextBlock) > state.nextBlock) archives = await ledgerArchives(host, ledger, source, tip, ic);
+    if (!first.archived.length && first.inlineStart === state.nextBlock) await apply(first.txs, first.inlineStart);
+    else if (!archives.length) await apply((await ledgerRange(host, ledger, source, state.nextBlock, PER_CALL, ic, first)).txs, state.nextBlock);
 
     // Sliding window of block fetches. Results are applied strictly in block order.
     let perCall = PER_CALL;
@@ -264,8 +332,8 @@ async function syncLedger(tick: Tick, row: IdxStateRow, phase: "tail" | "backfil
     const fetchDeadline = deadline - reserveMs(tick);
 
     const run = async (job: Job): Promise<JobResult> => {
-      if (job.archive) return { job, txs: await archivePage(host, job.archive.canister, "get_transactions", job.start, job.length, ic), tip: null };
-      const r = await ledgerRange(host, ledger, job.start, job.length, ic);
+      if (job.archive) return { job, txs: await archivePage(host, job.archive.canister, source, job.start, job.length, ic), tip: null };
+      const r = await ledgerRange(host, ledger, source, job.start, job.length, ic);
       return { job, txs: r.txs, tip: r.tip };
     };
     // Every planned range is tracked by its start block. A range can be fetched twice (hedging): IC query
@@ -304,7 +372,7 @@ async function syncLedger(tick: Tick, row: IdxStateRow, phase: "tail" | "backfil
       if (Date.now() >= fetchDeadline && !ready.has(state.nextBlock)) break;
       for (let r = ready.get(state.nextBlock); r; r = ready.get(state.nextBlock)) {
         ready.delete(r.job.start);
-        apply(r.txs, r.job.start);
+        await apply(r.txs, r.job.start);
         if (r.tip != null && r.tip > tip) tip = ls.tip = r.tip;
         if (r.txs.length < r.job.length) {
           // A short answer means this canister caps responses below what was asked. Everything planned
@@ -338,11 +406,72 @@ async function syncLedger(tick: Tick, row: IdxStateRow, phase: "tail" | "backfil
     ls.error = failure.message;
   } else if (failure) {
     tick.stats.errors++;
-    ls.error = await fail(tick, ledger, failure, row.fails).catch((e) => String(e));
+    ls.error = await fail(tick, ledger, failure, row.fails, kind).catch((e) => String(e));
+  } else if (state.nextBlock >= tip && tip > 0) {
+    // Caught up: run the reconcile gate when it is due and the tick still has room.
+    const maxRec = tick.opts.maxReconciles ?? 3;
+    if (now() >= row.reconcile_next_at && tick.reconciles < maxRec && Date.now() < deadline - reserveMs(tick)) {
+      tick.reconciles++;
+      try {
+        ls.reconciled = await reconcileGate(tick, { ...row, next_block: state.nextBlock, tip, fee_cols: feeColsJson(state.feeCols) }, source, defaultFee);
+      } catch (e) {
+        console.warn("indexer reconcile", ledger, String(e).slice(0, 200));
+      }
+    }
   }
   ls.ms = Date.now() - t0;
   if (phase === "tail") tick.stats.tailed++;
   else tick.stats.backfilled++;
+}
+
+/**
+ * The reconcile gate. Sum of indexed balances versus icrc1_total_supply, exact. Blocks land while the
+ * supply is being read, so the comparison is accepted at any height between the cursor and the tip seen
+ * right after the supply read: the running sum plus the supply effect of each of those blocks must hit
+ * the ledger's figure at one of them. Anything else is a mismatch.
+ *
+ * A mismatch on a ledger indexed with an older balance algorithm triggers one automatic replay from
+ * block 0 with the current one. A mismatch on a current-algorithm ledger stays recorded (not trusted)
+ * for a human to look at.
+ */
+async function reconcileGate(tick: Tick, row: IdxStateRow, source: BlockSource, defaultFee: bigint): Promise<boolean> {
+  const { env, ic, dbm } = tick;
+  const host = env.IC_HOST;
+  const ts = now();
+  const supply = await ledgerSupply(host, row.ledger, ic);
+  const after = await ledgerPage(host, row.ledger, source, row.next_block, PER_CALL, ic);
+  const sum = await sumBalances(env.DB, row.ledger, row.kind, dbm);
+  const fresh = after.archived.length ? [] : after.inlineStart === row.next_block ? after.txs : [];
+  const deltas = supplyDeltas(parseFeeCols(row.fee_cols), fresh, defaultFee, row.next_block);
+  let running = sum.sum;
+  let matched: number | null = running === supply ? row.next_block : null;
+  for (let i = 0; i < deltas.length && matched == null; i++) {
+    running += deltas[i]!;
+    if (running === supply) matched = row.next_block + i + 1;
+  }
+  const undecidable = matched == null && after.tip - row.next_block > fresh.length; // too busy to line up
+  const diff = (supply - running).toString();
+  if (matched != null) {
+    await saveReconcile(env.DB, { ledger: row.ledger, now: ts, ok: true, diffRaw: "0", supplyRaw: supply.toString(), block: matched, note: `exact at block ${matched}: ${sum.holders} holders, ${sum.accounts} accounts`, nextAt: ts + RECONCILE_OK_EVERY }, dbm);
+    tick.stats.reconciled++;
+    return true;
+  }
+  if (undecidable) {
+    await saveReconcile(env.DB, { ledger: row.ledger, now: ts, ok: null, diffRaw: null, supplyRaw: null, block: null, note: `undecided: ${after.tip - row.next_block} blocks landed during the check`, nextAt: ts + 900 }, dbm);
+    return false;
+  }
+  const note = `mismatch: supply minus indexed sum is ${diff} at block ${row.next_block + fresh.length}${sum.negative ? `, ${sum.negative} negative accounts` : ""}`;
+  if (row.kind === "icrc" && row.algo_version < ALGO_VERSION && row.replays === 0) {
+    const wiped = await resetForReplay(env.DB, row.ledger, row.algo_version, ALGO_VERSION, ts, `${note}; replaying with balance rules v${ALGO_VERSION}`, dbm);
+    if (wiped) {
+      tick.stats.replayed++;
+      console.warn("indexer replay", row.ledger, note);
+      return false;
+    }
+  }
+  await saveReconcile(env.DB, { ledger: row.ledger, now: ts, ok: false, diffRaw: diff, supplyRaw: supply.toString(), block: row.next_block + fresh.length, note, nextAt: ts + RECONCILE_RETRY }, dbm);
+  tick.stats.reconciled++;
+  return false;
 }
 
 export interface ReconcileResult {
@@ -351,41 +480,29 @@ export interface ReconcileResult {
   indexedSupply: string;
   /** icrc1_total_supply right now. */
   ledgerSupply: string;
-  /** ledgerSupply - indexedSupply. Zero for an exact index. Positive when a fee collector received fees the indexer treated as burned. */
+  /** ledgerSupply - indexedSupply. Zero for an exact index. */
   diff: string;
   accounts: number; holders: number; holdersInState: number; negativeAccounts: number;
+  trusted: boolean; reconcileNote: string | null;
 }
 
 /**
- * Correctness check: replayed balances must add up to the ledger's total supply. Reads every balance row
- * of the ledger (keyset pages), so it is a diagnostic for admin use, not something to call per request.
- * Only meaningful when behind is 0. Blocks that landed after the index cursor show up in diff.
+ * Diagnostic for admin use: the same comparison the gate makes, without acting on it. Reads every
+ * balance row of the ledger, so not something to call per request. Blocks that landed after the index
+ * cursor show up in diff.
  */
 export async function reconcile(env: Env, ledger: string): Promise<ReconcileResult> {
   const meter = newMeter();
-  const [supply, head, st] = await Promise.all([ledgerSupply(env.IC_HOST, ledger, meter), ledgerPage(env.IC_HOST, ledger, 0, 0, meter), getState(env.DB, ledger)]);
-  let sum = 0n;
-  let accounts = 0;
-  let holders = 0;
-  let negative = 0;
-  let after = "";
-  for (;;) {
-    const page = (await env.DB.prepare("SELECT account, balance_raw FROM balances WHERE ledger = ? AND account > ? ORDER BY account LIMIT 20000").bind(ledger, after).all<{ account: string; balance_raw: string }>()).results;
-    for (const r of page) {
-      const b = BigInt(r.balance_raw);
-      sum += b;
-      accounts++;
-      if (b > 0n) holders++;
-      else if (b < 0n) negative++;
-    }
-    if (page.length < 20000) break;
-    after = page[page.length - 1]!.account;
-  }
+  const dbm = newDbMeter();
+  const st = await getState(env.DB, ledger);
+  const source: BlockSource = st ? sourceOf(st) : "tx";
+  const [supply, head, sum] = await Promise.all([ledgerSupply(env.IC_HOST, ledger, meter), ledgerPage(env.IC_HOST, ledger, source, 0, 0, meter), sumBalances(env.DB, ledger, st?.kind ?? "icrc", dbm)]);
   const next = st?.next_block ?? 0;
   return {
     ledger, indexedThrough: next - 1, tip: head.tip, behind: head.tip - next, complete: next >= head.tip && next > 0,
-    indexedSupply: sum.toString(), ledgerSupply: supply.toString(), diff: (supply - sum).toString(),
-    accounts, holders, holdersInState: st?.holders ?? 0, negativeAccounts: negative,
+    indexedSupply: sum.sum.toString(), ledgerSupply: supply.toString(), diff: (supply - sum.sum).toString(),
+    accounts: sum.accounts, holders: sum.holders, holdersInState: st?.holders ?? 0, negativeAccounts: sum.negative,
+    trusted: !!st && st.reconcile_ok === 1 && next >= st.tip, reconcileNote: st?.reconcile_note ?? null,
   };
 }
 

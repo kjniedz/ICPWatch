@@ -15,8 +15,15 @@ export interface IndexProgress {
   behind: number;
   /** 0 to 100, one decimal. Never 100 unless complete. */
   percent: number;
-  /** True when every block known at the last check has been applied. Holder data is only presentable as such when true. */
+  /** True when every block known at the last check has been applied. */
   complete: boolean;
+  /** True when complete AND the sum of indexed balances matched icrc1_total_supply exactly at the last check. Only trusted data is presented as our own. */
+  trusted: boolean;
+  /** icrc | icp */
+  kind: string;
+  reconciledAt: number | null;
+  reconcileNote: string | null;
+  failReason: string | null;
   holders: number;
   accounts: number;
   /** Timestamp of the last applied block: balances are "as of" this moment. */
@@ -32,9 +39,12 @@ export interface IndexProgress {
 interface StateRow {
   ledger: string; next_block: number; tip: number; decimals: number; big_min_raw: string | null; holders: number; accounts: number; status: string;
   error: string | null; last_block_ts: number | null; started_at: number | null; updated_at: number; completed_at: number | null;
+  kind: string; reconcile_ok: number | null; reconciled_at: number | null; reconcile_note: string | null; reconcile_block: number | null; fail_reason: string | null;
 }
 
-const STATE_COLS = "ledger, next_block, tip, decimals, big_min_raw, holders, accounts, status, error, last_block_ts, started_at, updated_at, completed_at";
+const STATE_COLS = "ledger, next_block, tip, decimals, big_min_raw, holders, accounts, status, error, last_block_ts, started_at, updated_at, completed_at, kind, reconcile_ok, reconciled_at, reconcile_note, reconcile_block, fail_reason";
+const balanceTable = (kind: string) => (kind === "icp" ? "icp_balances" : "balances");
+const ledgerWhere = (kind: string) => (kind === "icp" ? "?1 IS NOT NULL" : "ledger = ?1");
 
 function toProgress(r: StateRow): IndexProgress {
   const complete = r.status !== "unsupported" && r.completed_at != null && r.next_block >= r.tip;
@@ -42,6 +52,9 @@ function toProgress(r: StateRow): IndexProgress {
   return {
     ledger: r.ledger, status: r.status, nextBlock: r.next_block, tip: r.tip, behind: Math.max(0, r.tip - r.next_block),
     percent: complete ? 100 : Math.min(99.9, pct), complete, holders: r.holders, accounts: r.accounts, asOfTs: r.last_block_ts,
+    // A reconcile that passed at a block at or past the current cursor... the cursor moves on, so trust
+    // holds while the ledger is complete and the last verdict was exact. A later mismatch clears it.
+    trusted: complete && r.reconcile_ok === 1, kind: r.kind, reconciledAt: r.reconciled_at, reconcileNote: r.reconcile_note, failReason: r.fail_reason,
     startedAt: r.started_at, completedAt: r.completed_at, updatedAt: r.updated_at, error: r.error, decimals: r.decimals, bigMinRaw: r.big_min_raw,
   };
 }
@@ -91,21 +104,21 @@ async function supplyBasis(db: D1Database, ledger: string, decimals: number, tot
   return s?.s ? { units: s.s, source: "indexed-sum" } : { units: null, source: "none" };
 }
 
-export interface TopHolders { ledger: string; complete: boolean; progress: IndexProgress | null; supply: SupplyBasis; holders: HolderRow[] }
+export interface TopHolders { ledger: string; complete: boolean; trusted: boolean; progress: IndexProgress | null; supply: SupplyBasis; holders: HolderRow[] }
 
 /** Largest accounts of a ledger with their share of supply. Check `complete` before presenting this as the holder list. */
 export async function topHolders(db: D1Database, ledger: string, opts: { limit?: number; offset?: number; totalSupplyRaw?: string | bigint | null } = {}): Promise<TopHolders> {
   const progress = await indexProgress(db, ledger);
-  if (!progress) return { ledger, complete: false, progress: null, supply: { units: null, source: "none" }, holders: [] };
+  if (!progress) return { ledger, complete: false, trusted: false, progress: null, supply: { units: null, source: "none" }, holders: [] };
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
   const offset = Math.max(opts.offset ?? 0, 0);
   const [supply, rows] = await Promise.all([
     supplyBasis(db, ledger, progress.decimals, opts.totalSupplyRaw),
-    db.prepare("SELECT account, owner, balance, balance_raw, tx_count, first_seen, last_active FROM balances WHERE ledger = ? AND balance > 0 ORDER BY balance DESC LIMIT ? OFFSET ?")
+    db.prepare(`SELECT account, owner, balance, balance_raw, tx_count, first_seen, last_active FROM ${balanceTable(progress.kind)} WHERE ${ledgerWhere(progress.kind)} AND balance > 0 ORDER BY balance DESC LIMIT ?2 OFFSET ?3`)
       .bind(ledger, limit, offset).all<{ account: string; owner: string; balance: number; balance_raw: string; tx_count: number; first_seen: number; last_active: number }>(),
   ]);
   return {
-    ledger, complete: progress.complete, progress, supply,
+    ledger, complete: progress.complete, trusted: progress.trusted, progress, supply,
     holders: rows.results.map((r, i) => ({
       rank: offset + i + 1, account: r.account, owner: r.owner, balance: r.balance, balanceRaw: r.balance_raw,
       share: supply.units ? r.balance / supply.units : null, txCount: r.tx_count, firstSeen: r.first_seen, lastActive: r.last_active,
@@ -114,7 +127,7 @@ export async function topHolders(db: D1Database, ledger: string, opts: { limit?:
 }
 
 export interface HolderStats {
-  ledger: string; complete: boolean; progress: IndexProgress | null; supply: SupplyBasis;
+  ledger: string; complete: boolean; trusted: boolean; progress: IndexProgress | null; supply: SupplyBasis;
   /** Accounts with a balance above zero. */
   holders: number;
   /** Every account ever seen, emptied ones included. */
@@ -126,13 +139,13 @@ export interface HolderStats {
 /** Holder count and concentration. Accounts are ledger accounts: a DEX pool or a treasury counts as one holder. */
 export async function holderStats(db: D1Database, ledger: string, totalSupplyRaw?: string | bigint | null): Promise<HolderStats> {
   const progress = await indexProgress(db, ledger);
-  if (!progress) return { ledger, complete: false, progress: null, supply: { units: null, source: "none" }, holders: 0, accounts: 0, top10Share: null, top50Share: null, top100Share: null };
+  if (!progress) return { ledger, complete: false, trusted: false, progress: null, supply: { units: null, source: "none" }, holders: 0, accounts: 0, top10Share: null, top50Share: null, top100Share: null };
   const [supply, top] = await Promise.all([
     supplyBasis(db, ledger, progress.decimals, totalSupplyRaw),
-    db.prepare("SELECT balance FROM balances WHERE ledger = ? AND balance > 0 ORDER BY balance DESC LIMIT 100").bind(ledger).all<{ balance: number }>(),
+    db.prepare(`SELECT balance FROM ${balanceTable(progress.kind)} WHERE ${ledgerWhere(progress.kind)} AND balance > 0 ORDER BY balance DESC LIMIT 100`).bind(ledger).all<{ balance: number }>(),
   ]);
   const share = (n: number) => (supply.units ? Math.min(1, top.results.slice(0, n).reduce((s, r) => s + r.balance, 0) / supply.units) : null);
-  return { ledger, complete: progress.complete, progress, supply, holders: progress.holders, accounts: progress.accounts, top10Share: share(10), top50Share: share(50), top100Share: share(100) };
+  return { ledger, complete: progress.complete, trusted: progress.trusted, progress, supply, holders: progress.holders, accounts: progress.accounts, top10Share: share(10), top50Share: share(50), top100Share: share(100) };
 }
 
 export interface BigTransferRow {
@@ -188,4 +201,31 @@ export async function dailyStats(db: D1Database, ledger: string, days = 90): Pro
   const rows = (await db.prepare("SELECT day, txs, transfers, volume, mints, burns, fees, active_accounts, new_accounts, holders FROM ledger_daily WHERE ledger = ? ORDER BY day DESC LIMIT ?")
     .bind(ledger, Math.min(Math.max(days, 1), 4000)).all<DailyStatsRow>()).results;
   return rows.reverse();
+}
+
+export interface IndexFailure { ledger: string; symbol: string | null; status: string; fail_reason: string | null; fail_canister: string | null; failed_since: number | null; fails: number; retry_at: number; error: string | null }
+
+/** Ledgers the indexer cannot replay right now, with the machine-readable reason, for the status page. */
+export async function indexFailures(db: D1Database): Promise<IndexFailure[]> {
+  return (await db.prepare(
+    `SELECT s.ledger, t.symbol, s.status, s.fail_reason, s.fail_canister, s.failed_since, s.fails, s.retry_at, s.error FROM idx_state s LEFT JOIN tokens t ON t.id = s.ledger
+     WHERE s.status IN ('error', 'unsupported') ORDER BY s.fail_reason, s.failed_since`,
+  ).all<IndexFailure>()).results;
+}
+
+export interface Counterparty { account: string; count: number; amount: number; last_ts: number }
+
+/**
+ * Top counterparties of an account, in and out, from the LARGE transfer feed only (transfers_big keeps
+ * movements above each ledger's threshold, not every transfer). Good enough for exchange and hot-wallet
+ * detection, which is about big flows; never present it as a complete transaction history.
+ */
+export async function accountFlows(db: D1Database, ledger: string, account: string, opts: { sinceTs?: number; limit?: number } = {}): Promise<{ inbound: Counterparty[]; outbound: Counterparty[] }> {
+  const since = opts.sinceTs ?? 0;
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 200);
+  const [inb, outb] = await db.batch<Counterparty>([
+    db.prepare("SELECT from_account account, COUNT(*) count, SUM(amount) amount, MAX(ts) last_ts FROM transfers_big WHERE ledger = ?1 AND to_account = ?2 AND ts >= ?3 AND from_account IS NOT NULL GROUP BY from_account ORDER BY amount DESC LIMIT ?4").bind(ledger, account, since, limit),
+    db.prepare("SELECT to_account account, COUNT(*) count, SUM(amount) amount, MAX(ts) last_ts FROM transfers_big WHERE ledger = ?1 AND from_account = ?2 AND ts >= ?3 AND to_account IS NOT NULL GROUP BY to_account ORDER BY amount DESC LIMIT ?4").bind(ledger, account, since, limit),
+  ]);
+  return { inbound: inb!.results, outbound: outb!.results };
 }

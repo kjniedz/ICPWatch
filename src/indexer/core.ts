@@ -13,13 +13,16 @@
 // The fee is the one in the block. get_transactions already substitutes the block's effective fee
 // when the caller did not name one, so the ledger's current icrc1_fee (defaultFee) is only a last resort.
 //
-// KNOWN LIMITATION, fee collectors: fees are treated as burned. Ledgers configured with a fee
-// collector (the ck tokens: the minter's fee subaccount) credit the fee to that account instead,
-// and get_transactions does not expose it. For those ledgers the collector's balance is under-counted
-// by the fees it received, and it can go negative here once it spends them. Negative balances are kept
-// as computed (never clamped) and excluded from holder counts. reconcile() reports the exact gap:
-// ledger total supply minus indexed sum equals the fees that went to the collector.
-// TODO: read fee_col / fee_col_block through icrc3_get_blocks for ledgers where reconcile() is non-zero.
+// FEE COLLECTORS (algo version 2). A DFINITY ICRC ledger configured with a fee collector (every ck token:
+// the minter's 0x0fee subaccount) credits TRANSFER fees to that account instead of burning them. The first
+// block after the collector is set carries fee_col (the account), later blocks carry fee_col_block (the index
+// of that first block). Blocks with neither burn the fee. APPROVE fees are always burned by those ledgers, even
+// while a collector is set (verified: ckBTC, ckETH and ckUSDC reconcile to zero with this rule and do not with
+// the other). ICRC-107 replaces this: after a "107feecol" block every fee, approve included, goes to the account
+// it names (or is burned when it names none) and the legacy fields are ignored.
+// get_transactions does not expose any of this, so blocks are read in generic form (see ledger.ts). With the
+// "tx" source every fee is treated as burned and the reconcile gate decides whether that was right.
+// Negative balances are kept as computed (never clamped) and excluded from holder counts.
 import { Principal } from "@icp-sdk/core/principal";
 
 export const DAY = 86_400;
@@ -36,6 +39,42 @@ export interface Tx {
   amount: bigint;
   /** Fee recorded in the block, null when the block carries none. */
   fee: bigint | null;
+  /** fee_col: this block declares the fee collector account (and pays its own fee to it). */
+  feeCol?: string | null;
+  /** fee_col_block: index of the earlier block whose fee_col receives this block's fee. */
+  feeColBlock?: number | null;
+  /** ICRC-107 "107feecol" block: the ledger-wide collector from here on. null means fees are burned again. */
+  setFeeCol?: string | null;
+}
+
+/** Fee collector declarations of one ledger, carried across chunks and persisted in idx_state.fee_cols. */
+export interface FeeCols {
+  /** Block index of a fee_col block to the account it named. */
+  blocks: Map<number, string>;
+  /** ICRC-107 collector. undefined: the ledger never set one, legacy per-block fields apply. */
+  global: string | null | undefined;
+  /** Set when something was added, so the caller knows to persist. */
+  dirty: boolean;
+}
+export const newFeeCols = (): FeeCols => ({ blocks: new Map(), global: undefined, dirty: false });
+export function parseFeeCols(json: string | null | undefined): FeeCols {
+  const out = newFeeCols();
+  if (!json) return out;
+  try {
+    const o = JSON.parse(json) as { blocks?: Record<string, string>; global?: string | null };
+    for (const [k, v] of Object.entries(o.blocks ?? {})) out.blocks.set(Number(k), v);
+    if ("global" in o) out.global = o.global ?? null;
+  } catch { /* unreadable: start empty, references get resolved from the chain again */ }
+  return out;
+}
+export function feeColsJson(f: FeeCols): string | null {
+  if (!f.blocks.size && f.global === undefined) return null;
+  return JSON.stringify({ blocks: Object.fromEntries(f.blocks), ...(f.global !== undefined ? { global: f.global } : {}) });
+}
+
+/** A block names a fee_col_block this index has never seen (it tails a ledger replayed before version 2). */
+export class UnknownFeeColError extends Error {
+  constructor(public blocks: number[]) { super(`unknown fee collector block ${blocks.join(", ")}`); }
 }
 
 export interface AccountDelta {
@@ -75,13 +114,19 @@ export interface ChunkState {
   accounts: Map<string, AccountDelta>;
   days: Map<number, DayAgg>;
   big: BigTransfer[];
-  totals: { blocks: number; transfers: number; mints: number; burns: number; approves: number; other: number; volume: bigint; minted: bigint; burned: bigint; fees: bigint; defaultFeeUsed: number };
+  /** Shared with the chunks before and after this one. */
+  feeCols: FeeCols;
+  /** fees = feesBurned + feesCollected. minted - burned - feesBurned is the chunk's effect on total supply. */
+  totals: {
+    blocks: number; transfers: number; mints: number; burns: number; approves: number; other: number; volume: bigint; minted: bigint; burned: bigint;
+    fees: bigint; feesBurned: bigint; feesCollected: bigint; defaultFeeUsed: number;
+  };
 }
 
-export function newChunk(startBlock: number, minBig: bigint | null, lastTs = 0): ChunkState {
+export function newChunk(startBlock: number, minBig: bigint | null, lastTs = 0, feeCols: FeeCols = newFeeCols()): ChunkState {
   return {
-    startBlock, nextBlock: startBlock, lastTs, minBig, accounts: new Map(), days: new Map(), big: [],
-    totals: { blocks: 0, transfers: 0, mints: 0, burns: 0, approves: 0, other: 0, volume: 0n, minted: 0n, burned: 0n, fees: 0n, defaultFeeUsed: 0 },
+    startBlock, nextBlock: startBlock, lastTs, minBig, accounts: new Map(), days: new Map(), big: [], feeCols,
+    totals: { blocks: 0, transfers: 0, mints: 0, burns: 0, approves: 0, other: 0, volume: 0n, minted: 0n, burned: 0n, fees: 0n, feesBurned: 0n, feesCollected: 0n, defaultFeeUsed: 0 },
   };
 }
 
@@ -164,10 +209,11 @@ function dayAgg(state: ChunkState, day: number): DayAgg {
   return d;
 }
 
-function touch(state: ChunkState, agg: DayAgg, account: string, delta: bigint, ts: number): void {
+/** counts = false for fee collector credits: the balance moves, but it is not a transaction of that account. */
+function touch(state: ChunkState, agg: DayAgg, account: string, delta: bigint, ts: number, counts = true): void {
   const a = state.accounts.get(account);
   if (!a) {
-    state.accounts.set(account, { delta, txCount: 1, firstTs: ts, lastTs: ts, firstDay: agg.day, lastDay: agg.day, marks: null });
+    state.accounts.set(account, { delta, txCount: counts ? 1 : 0, firstTs: ts, lastTs: ts, firstDay: agg.day, lastDay: agg.day, marks: null });
     return;
   }
   if (a.lastDay !== agg.day) {
@@ -176,8 +222,58 @@ function touch(state: ChunkState, agg: DayAgg, account: string, delta: bigint, t
     agg.activeRepeat++;
   }
   a.delta += delta;
-  a.txCount++;
+  if (counts) a.txCount++;
   a.lastTs = ts;
+}
+
+/** fee_col_block references in txs (from index `skip` on) that feeCols cannot resolve, including ones declared earlier in the same batch. */
+export function missingFeeCols(feeCols: FeeCols, txs: readonly Tx[], firstIndex: number, skip = 0): number[] {
+  const missing = new Set<number>();
+  for (let i = Math.max(0, skip); i < txs.length; i++) {
+    const ref = txs[i]!.feeColBlock;
+    if (ref == null || feeCols.blocks.has(ref)) continue;
+    const local = ref - firstIndex;
+    if (local >= 0 && local < i && txs[local]!.feeCol != null) continue;
+    missing.add(ref);
+  }
+  return [...missing];
+}
+
+/**
+ * Who receives the fee of this block: an account, or null when it is burned. Registers fee_col and 107feecol
+ * declarations as a side effect, so call it exactly once per block, in block order.
+ */
+export function feeSink(feeCols: FeeCols, tx: Tx, block: number): string | null {
+  if (tx.setFeeCol !== undefined) {
+    feeCols.global = tx.setFeeCol;
+    feeCols.dirty = true;
+  }
+  if (tx.feeCol != null && feeCols.blocks.get(block) !== tx.feeCol) {
+    feeCols.blocks.set(block, tx.feeCol);
+    feeCols.dirty = true;
+  }
+  if (feeCols.global !== undefined) return feeCols.global;
+  if (tx.kind !== "transfer") return null; // legacy collectors never receive approve fees
+  if (tx.feeCol != null) return tx.feeCol;
+  if (tx.feeColBlock != null) return feeCols.blocks.get(tx.feeColBlock) ?? null;
+  return null;
+}
+
+/**
+ * Effect of each block on total supply: mint +amount, burn -amount, fees minus what a collector received.
+ * Used by the reconcile gate to evaluate the blocks that landed while the supply was being read. Works on a
+ * copy of the collector state, so nothing is registered for real.
+ */
+export function supplyDeltas(feeCols: FeeCols, txs: readonly Tx[], defaultFee: bigint, firstIndex: number): bigint[] {
+  const copy: FeeCols = { blocks: new Map(feeCols.blocks), global: feeCols.global, dirty: false };
+  return txs.map((tx, i) => {
+    const sink = feeSink(copy, tx, firstIndex + i);
+    if (tx.kind === "mint") return tx.to == null ? 0n : tx.amount;
+    if (tx.kind === "burn") return tx.from == null ? 0n : -tx.amount;
+    if (tx.kind === "transfer") return tx.from == null || tx.to == null || sink != null ? 0n : -(tx.fee ?? defaultFee);
+    if (tx.kind === "approve") return tx.from == null || sink != null ? 0n : -(tx.fee ?? defaultFee);
+    return 0n;
+  });
 }
 
 /**
@@ -189,6 +285,9 @@ function touch(state: ChunkState, agg: DayAgg, account: string, delta: bigint, t
 export function applyBlocks(state: ChunkState, txs: readonly Tx[], defaultFee: bigint, firstIndex: number = state.nextBlock): number {
   if (firstIndex > state.nextBlock) throw new Error(`block gap: expected ${state.nextBlock}, got ${firstIndex}`);
   const skip = state.nextBlock - firstIndex;
+  // Checked before anything is folded: throwing halfway through a batch would leave the chunk half applied.
+  const unknown = missingFeeCols(state.feeCols, txs, firstIndex, skip);
+  if (unknown.length) throw new UnknownFeeColError(unknown);
   const tot = state.totals;
   let applied = 0;
   for (let i = skip; i < txs.length; i++) {
@@ -200,6 +299,16 @@ export function applyBlocks(state: ChunkState, txs: readonly Tx[], defaultFee: b
     const agg = dayAgg(state, dayOf(ts));
     agg.txs++;
     tot.blocks++;
+    const sink = feeSink(state.feeCols, tx, block);
+    const payFee = (fee: bigint) => {
+      agg.fees += fee;
+      tot.fees += fee;
+      if (sink == null || fee === 0n) tot.feesBurned += fee;
+      else {
+        tot.feesCollected += fee;
+        touch(state, agg, sink, fee, ts, false);
+      }
+    };
     switch (tx.kind) {
       case "mint":
         if (tx.to == null) break;
@@ -224,12 +333,11 @@ export function applyBlocks(state: ChunkState, txs: readonly Tx[], defaultFee: b
           touch(state, agg, tx.from, -(tx.amount + fee), ts);
           touch(state, agg, tx.to, tx.amount, ts);
         }
+        payFee(fee);
         agg.transfers++;
         agg.volume += tx.amount;
-        agg.fees += fee;
         tot.transfers++;
         tot.volume += tx.amount;
-        tot.fees += fee;
         break;
       }
       case "approve": {
@@ -237,9 +345,8 @@ export function applyBlocks(state: ChunkState, txs: readonly Tx[], defaultFee: b
         if (tx.fee == null) tot.defaultFeeUsed++;
         const fee = tx.fee ?? defaultFee;
         touch(state, agg, tx.from, -fee, ts);
-        agg.fees += fee;
+        payFee(fee);
         tot.approves++;
-        tot.fees += fee;
         break;
       }
       default:
@@ -274,7 +381,7 @@ export interface CommitPlan {
   holdersAfter: number;
   accountsAfter: number;
   newAccounts: number;
-  /** Accounts whose computed balance is below zero after this chunk (fee collectors, see the header). */
+  /** Accounts whose computed balance is below zero after this chunk. Should be zero: a negative balance means a rule is wrong for this ledger. */
   negative: number;
 }
 
