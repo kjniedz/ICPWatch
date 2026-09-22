@@ -259,6 +259,23 @@ function initLive() {
   });
 }
 
+// One-shot fragments: <div data-load="/url"> is replaced by the response once, right after load.
+function initLoad() {
+  $$("[data-load]").forEach(async (box) => {
+    try {
+      const res = await fetch(box.dataset.load!, { headers: { accept: "text/html" } });
+      if (!res.ok) return;
+      const tpl = document.createElement("template");
+      tpl.innerHTML = await res.text();
+      box.replaceWith(tpl.content);
+      initTables();
+      tickTimes();
+    } catch {
+      /* keep the placeholder */
+    }
+  });
+}
+
 // Global search with suggestions -------------------------------------------------
 function initSearch() {
   $$<HTMLFormElement>("form[data-search]").forEach((form) => {
@@ -385,6 +402,7 @@ initFilters();
 initWatchlist();
 initCopy();
 initLive();
+initLoad();
 initSearch();
 initLocalPages();
 tickTimes();

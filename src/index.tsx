@@ -19,7 +19,7 @@ import { enroll, lifeSupportTick, registry as lsRegistry, setCaps, setEnrollment
 import { LifeSupportRegistryPage } from "./pages/lifesupport";
 import { ICP_LEDGER, balanceOf, isCanisterId, isPrincipal, ledgerLogo, pool, probe, readCanisterState } from "./lib/ic";
 import { renderMarkdown } from "./lib/markdown";
-import { AccountNotFound, AccountPage } from "./pages/account";
+import { AccountNotFound, AccountPage, HoldingsSection } from "./pages/account";
 import { AlertsPage, IncidentsPage, type AlertTarget } from "./pages/alerts";
 import { ApiDocs, Changelog, Disclaimer, Docs, Faq, FormPage, HowItWorks, NotFound, Privacy, StatusPage, Terms } from "./pages/content";
 import { CanisterPage, TokenPage } from "./pages/detail";
@@ -359,9 +359,29 @@ app.get("/proposal/:id", async (c) => {
 
 app.get("/account/:id", async (c) => {
   const id = c.req.param("id");
-  const a = await loadAccount(c.env, id, { start: c.req.query("start"), token: c.req.query("token"), tokenStart: c.req.query("tstart") });
+  // Un-paged views are cached for a minute per colo: the live ledger reads are the slow part.
+  const paged = !!(c.req.query("start") || c.req.query("token") || c.req.query("tstart"));
+  const key = new Request(new URL(c.req.url).toString(), { method: "GET" });
+  if (!paged) {
+    const hit = await caches.default.match(key);
+    if (hit) return hit;
+  }
+  const a = await loadAccount(c.env, id, { start: c.req.query("start"), token: c.req.query("token"), tokenStart: c.req.query("tstart"), skipLive: !paged });
   const meta: PageMeta = { title: `Account ${id.slice(0, 16)}`, path: `/account/${id}`, section: "network", description: "Balances and recent transactions for this Internet Computer account, read from the ledgers and index canisters.", noindex: true };
-  return a ? page(c, meta, <AccountPage a={a} />) : page(c, meta, <AccountNotFound id={id} />, 404);
+  const res = a ? await page(c, meta, <AccountPage a={a} />) : await page(c, meta, <AccountNotFound id={id} />, 404);
+  if (!paged && res.status === 200) {
+    const copy = new Response(res.clone().body, res);
+    copy.headers.set("cache-control", "public, max-age=0, s-maxage=60");
+    c.executionCtx.waitUntil(caches.default.put(key, copy));
+  }
+  return res;
+});
+
+app.get("/account/:id/holdings", async (c) => {
+  const id = c.req.param("id");
+  const a = await loadAccount(c.env, id, { skipTxs: true });
+  if (!a) return c.text("", 404);
+  return c.html(<HoldingsSection a={a} self={`/account/${id}`} />, 200, { "cache-control": "public, max-age=0, s-maxage=60" });
 });
 
 // ---- search ---------------------------------------------------------------------------------------------

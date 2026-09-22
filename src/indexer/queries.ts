@@ -176,12 +176,15 @@ export interface AccountHolding {
   symbol: string | null; name: string | null; decimals: number | null;
   /** 1 when that ledger's index is complete, so the balance is current. 0 means the figure is a replay in progress. */
   complete: number;
+  /** 1 when the ledger's index has reconciled against total supply: the balance can stand in for a live read. */
+  trusted: number;
 }
 
 /** Every account (all subaccounts) of an owner principal across all indexed ledgers. */
 export async function accountHoldings(db: D1Database, owner: string, opts: { includeEmpty?: boolean; limit?: number } = {}): Promise<AccountHolding[]> {
   const sql = `SELECT b.ledger, b.account, b.owner, b.balance, b.balance_raw, b.tx_count, b.first_seen, b.last_active, t.symbol, t.name, COALESCE(t.decimals, s.decimals) decimals,
-      CASE WHEN s.completed_at IS NOT NULL AND s.next_block >= s.tip THEN 1 ELSE 0 END complete
+      CASE WHEN s.completed_at IS NOT NULL AND s.next_block >= s.tip THEN 1 ELSE 0 END complete,
+      CASE WHEN s.completed_at IS NOT NULL AND s.next_block >= s.tip AND s.reconcile_ok = 1 THEN 1 ELSE 0 END trusted
     FROM balances b LEFT JOIN tokens t ON t.id = b.ledger LEFT JOIN idx_state s ON s.ledger = b.ledger
     WHERE b.owner = ? ${opts.includeEmpty ? "" : "AND b.balance > 0"} ORDER BY b.last_active DESC LIMIT ?`;
   return (await db.prepare(sql).bind(owner, Math.min(Math.max(opts.limit ?? 200, 1), 1000)).all<AccountHolding>()).results;

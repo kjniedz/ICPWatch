@@ -89,7 +89,7 @@ export function AccountPage({ a }: { a: AccountView }) {
         <div>
           <div class="k">Tokens held</div>
           <div class="v">{a.holdings ? fmtNum(a.holdings.length) : "n/a"}</div>
-          <div class="s">{a.holdings ? `${a.holdings_checked} tracked ledgers asked` : "needs a principal"}</div>
+          <div class="s">{a.holdings ? `${a.holdings_checked} tracked ledgers checked${a.holdings_unchecked ? `, ${a.holdings_unchecked} did not answer in time` : ""}` : "needs a principal"}</div>
         </div>
         <div>
           <div class="k">Token value</div>
@@ -104,7 +104,36 @@ export function AccountPage({ a }: { a: AccountView }) {
       </div>
       <div style="margin-top:8px"><Fresh ts={a.icp.fetched_at} source={a.icp.source} staleAfter={120} label="read" /></div>
 
-      <div class="sec-head"><h2>Token holdings</h2>{a.holdings ? <Fresh ts={a.fetched_at} source={`${a.holdings_source} (${a.holdings_checked} ledgers)`} staleAfter={120} label="read" /> : null}</div>
+      {a.holdings && a.holdings_unchecked > 0 && a.live_url ? (
+        // The live balance wave takes longer than the page should: it streams in as a fragment.
+        <div data-load={a.live_url}><HoldingsSection a={a} self={self} pending /></div>
+      ) : <HoldingsSection a={a} self={self} />}
+
+      {a.token_txs ? (
+        <>
+          <div class="sec-head" id="token-txs"><h2>{a.token_txs.symbol} transactions</h2><Fresh ts={a.token_txs.fetched_at} source={a.token_txs.source} staleAfter={120} label="read" /></div>
+          <TxTable page={a.token_txs} pageHref={(s) => `${self}?token=${a.token_txs!.token_id}&tstart=${s}#token-txs`} />
+        </>
+      ) : null}
+
+      <div class="sec-head" id="icp-txs"><h2>ICP transactions</h2><Fresh ts={a.icp_txs.fetched_at} source={a.icp_txs.source} staleAfter={120} label="read" /></div>
+      <TxTable page={a.icp_txs} pageHref={(s) => `${self}?start=${s}#icp-txs`} />
+
+      <p class="note" style="margin-top:12px">
+        Read live from the ledgers and their index canisters when this page loads. Nothing is connected or signed, and ICPWatch does not store account lookups.
+        Staked ICP and SNS neurons are private on the Internet Computer: only their owner can list them, so they are not part of any total here.
+        {a.principal && !a.subaccount ? " Balances are for the default subaccount. Funds held in other subaccounts (for example exchange deposit accounts) have their own account pages." : ""}
+      </p>
+    </div>
+  );
+}
+
+
+/** The holdings section, rendered inline and again by the live fragment route once every ledger has answered. */
+export function HoldingsSection({ a, self, pending }: { a: AccountView; self: string; pending?: boolean }) {
+  return (
+    <>
+      <div class="sec-head"><h2>Token holdings{pending ? <span class="muted" style="font-weight:500;font-size:12px"> · asking the remaining ledgers...</span> : null}</h2>{a.holdings ? <Fresh ts={a.fetched_at} source={`${a.holdings_source} (${a.holdings_checked} ledgers)`} staleAfter={120} label="read" /> : null}</div>
       {a.holdings ? (
         <div class="card tbl-wrap">
           <table class="tbl">
@@ -127,22 +156,7 @@ export function AccountPage({ a }: { a: AccountView }) {
         <div class="card"><Empty>An account identifier is a one-way hash of a principal and a subaccount, so other ledgers cannot be asked about it. Search for the principal instead to see its token holdings.</Empty></div>
       )}
 
-      {a.token_txs ? (
-        <>
-          <div class="sec-head" id="token-txs"><h2>{a.token_txs.symbol} transactions</h2><Fresh ts={a.token_txs.fetched_at} source={a.token_txs.source} staleAfter={120} label="read" /></div>
-          <TxTable page={a.token_txs} pageHref={(s) => `${self}?token=${a.token_txs!.token_id}&tstart=${s}#token-txs`} />
-        </>
-      ) : null}
-
-      <div class="sec-head" id="icp-txs"><h2>ICP transactions</h2><Fresh ts={a.icp_txs.fetched_at} source={a.icp_txs.source} staleAfter={120} label="read" /></div>
-      <TxTable page={a.icp_txs} pageHref={(s) => `${self}?start=${s}#icp-txs`} />
-
-      <p class="note" style="margin-top:12px">
-        Read live from the ledgers and their index canisters when this page loads. Nothing is connected or signed, and ICPWatch does not store account lookups.
-        Staked ICP and SNS neurons are private on the Internet Computer: only their owner can list them, so they are not part of any total here.
-        {a.principal && !a.subaccount ? " Balances are for the default subaccount. Funds held in other subaccounts (for example exchange deposit accounts) have their own account pages." : ""}
-      </p>
-    </div>
+    </>
   );
 }
 

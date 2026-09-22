@@ -5,6 +5,7 @@
 //   Token transactions: the token's index-ng canister get_account_transactions, when the registry knows the index
 // An account identifier is a one-way hash of (principal, subaccount), so a bare identifier can only
 // show its ICP side. Neurons are private on the IC and are never shown.
+import { accountHoldings } from "../indexer/queries";
 import { Actor } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
@@ -105,7 +106,11 @@ export interface AccountView {
   /** Null when the principal is unknown (bare account identifier), so token ledgers cannot be asked. */
   holdings: AccountHolding[] | null;
   holdings_checked: number;
+  /** Ledgers that did not answer before the page deadline. Never silently dropped. */
+  holdings_unchecked: number;
   holdings_source: string;
+  /** Fragment URL that finishes the live balance wave, set when the first paint skipped it. */
+  live_url: string | null;
   total_usd: number | null;
   icp_txs: TxPage;
   /** Present when a token was requested via opts.token and its index canister is known. */
@@ -121,6 +126,10 @@ export interface LoadAccountOpts {
   /** Token transaction paging. */
   tokenStart?: string | null;
   pageSize?: number;
+  /** Skip the live icrc1_balance_of wave (index-backed holdings only). The page uses this for the first paint. */
+  skipLive?: boolean;
+  /** Skip transaction reads (the holdings fragment uses this). */
+  skipTxs?: boolean;
 }
 
 const e8 = (v: bigint | undefined | null) => (v == null ? null : Number(v) / 1e8);
@@ -251,6 +260,33 @@ export function accountHref(raw: string): string | null {
  * Everything the account page shows, read live. Returns null when `id` is neither a valid account
  * identifier (CRC32 checked), a principal, nor an ICRC-1 textual account.
  */
+const LIVE_DEADLINE_MS = 1200;
+type IndexedHolding = Awaited<ReturnType<typeof accountHoldings>>[number];
+
+/**
+ * icrc1_balance_of across many ledgers with bounded concurrency and one deadline for the whole wave.
+ * Returns a map of ledger to balance (null when the ledger errored); ledgers missing from the map did
+ * not answer before the deadline.
+ */
+async function liveBalances(host: string, rows: PricedToken[], principal: string, subaccount: Uint8Array | null, deadlineMs: number): Promise<Map<string, bigint | null>> {
+  const out = new Map<string, bigint | null>();
+  const deadline = Date.now() + deadlineMs;
+  let next = 0;
+  const worker = async () => {
+    while (next < rows.length && Date.now() < deadline) {
+      const t = rows[next++]!;
+      try {
+        const v = await Promise.race([icrcBalance(host, t.id, principal, subaccount), new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), Math.max(50, deadline - Date.now())))]);
+        out.set(t.id, v);
+      } catch {
+        if (Date.now() < deadline) out.set(t.id, null);
+      }
+    }
+  };
+  await Promise.race([Promise.all(Array.from({ length: 16 }, worker)), new Promise<void>((r) => setTimeout(r, deadlineMs + 50))]);
+  return out;
+}
+
 export async function loadAccount(env: Env, id: string, opts: LoadAccountOpts = {}): Promise<AccountView | null> {
   const input: AccountInput = classifyInput(id);
   if (input.kind === "other" || input.kind === "hex64") return null;
@@ -261,6 +297,10 @@ export async function loadAccount(env: Env, id: string, opts: LoadAccountOpts = 
   const principal = input.kind === "account_id" ? null : input.principal;
   const subHex = input.kind === "icrc_account" ? input.subaccount : null;
   const subaccount = subHex ? fromHex(subHex) : null;
+
+  // The two ICP reads do not depend on anything in the database: start them first.
+  const balP = icpBalance(host, accountId).then((v) => ({ v, error: null as string | null }), (e) => ({ v: null as number | null, error: errText(e) }));
+  const txsP = opts.skipTxs ? Promise.resolve({ v: null, error: null as string | null }) : icpTransactions(host, accountId, natText(opts.start), pageSize).then((v) => ({ v, error: null as string | null }), (e) => ({ v: null, error: errText(e) }));
 
   // Registry context: prices, priced tokens, and the labels of watched canisters.
   const [icpPrice, tokenRows, canisterRows] = await Promise.all([
@@ -284,14 +324,19 @@ export async function loadAccount(env: Env, id: string, opts: LoadAccountOpts = 
   const canister = principal ? (subaccount ? null : (canisterRows.find((c) => c.id === principal) ?? null)) : (known.get(accountId) ?? null);
 
   const wantToken = principal && opts.token ? (tokenRows.find((t) => t.id === opts.token) ?? null) : null;
+
+  // Balances from our own block index wherever a ledger has reconciled, so only the remaining ledgers
+  // need a live query. The live wave gets a hard deadline: ledgers that do not answer in time are
+  // reported as not checked rather than holding the page.
+  const indexed = principal && !subaccount ? await accountHoldings(env.DB, principal, { includeEmpty: true }).catch(() => [] as IndexedHolding[]) : [];
+  const fromIndex = new Map<string, IndexedHolding>();
+  for (const h of indexed) if (h.trusted && h.account === principal) fromIndex.set(h.ledger, h);
+  const liveRows = tokenRows.filter((t) => !fromIndex.has(t.id));
   const [bal, txs, held, tokenTxs] = await Promise.all([
-    icpBalance(host, accountId).then((v) => ({ v, error: null as string | null }), (e) => ({ v: null as number | null, error: errText(e) })),
-    icpTransactions(host, accountId, natText(opts.start), pageSize).then((v) => ({ v, error: null as string | null }), (e) => ({ v: null, error: errText(e) })),
-    // One slow or half-dead ledger must not hold the page hostage: each balance read gets 3 seconds.
-    principal
-      ? pool(tokenRows, 16, (t) => Promise.race([icrcBalance(host, t.id, principal, subaccount), new Promise<never>((_, rej) => setTimeout(() => rej(new Error("balance read timed out")), 3000))]))
-      : Promise.resolve(null),
-    wantToken?.index_id
+    balP,
+    txsP,
+    principal && !opts.skipLive ? liveBalances(host, liveRows, principal, subaccount, opts.skipTxs ? 6000 : LIVE_DEADLINE_MS) : Promise.resolve(null),
+    wantToken?.index_id && !opts.skipTxs
       ? icrcTransactions(host, wantToken.index_id, principal!, subaccount, wantToken.decimals, natText(opts.tokenStart), pageSize).then((v) => ({ v, error: null as string | null }), (e) => ({ v: null, error: errText(e) }))
       : Promise.resolve(null),
   ]);
@@ -303,14 +348,22 @@ export async function loadAccount(env: Env, id: string, opts: LoadAccountOpts = 
   };
 
   let holdings: AccountHolding[] | null = null;
-  if (held) {
+  let unchecked = 0;
+  if (principal) {
     holdings = [];
-    held.forEach((r, i) => {
-      if (r.status !== "fulfilled" || r.value === 0n) return;
-      const t = tokenRows[i]!;
-      const balance = Number(r.value) / 10 ** t.decimals;
-      holdings!.push({ token_id: t.id, symbol: t.symbol, name: t.name, logo: t.logo, balance, price_usd: t.price_usd, usd: t.price_usd != null ? balance * t.price_usd : null, has_index: !!t.index_id });
-    });
+    for (const t of tokenRows) {
+      const ix = fromIndex.get(t.id);
+      if (ix) {
+        const balance = Number(BigInt(ix.balance_raw)) / 10 ** t.decimals;
+        if (balance > 0) holdings.push({ token_id: t.id, symbol: t.symbol, name: t.name, logo: t.logo, balance, price_usd: t.price_usd, usd: t.price_usd != null ? balance * t.price_usd : null, has_index: !!t.index_id });
+        continue;
+      }
+      const r = held?.get(t.id);
+      if (r === undefined) { unchecked++; continue; }
+      if (r == null || r === 0n) continue;
+      const balance = Number(r) / 10 ** t.decimals;
+      holdings.push({ token_id: t.id, symbol: t.symbol, name: t.name, logo: t.logo, balance, price_usd: t.price_usd, usd: t.price_usd != null ? balance * t.price_usd : null, has_index: !!t.index_id });
+    }
     holdings.sort((a, b) => (b.usd ?? 0) - (a.usd ?? 0));
   }
 
@@ -325,7 +378,9 @@ export async function loadAccount(env: Env, id: string, opts: LoadAccountOpts = 
     icrc_account: principal ? encodeIcrcAccount(principal, subaccount) : null,
     canister, is_canister: principal ? isCanisterId(principal) : !!canister,
     icp: { balance: icpBal, price_usd: price, usd: icpUsd, source: bal.v != null ? "ICP ledger account_balance" : "ICP index canister", fetched_at: ts, error: bal.v == null && icpBal == null ? bal.error : null },
-    holdings, holdings_checked: tokenRows.length, holdings_source: "icrc1_balance_of on each ledger", total_usd: total,
+    holdings, holdings_checked: tokenRows.length - unchecked, holdings_unchecked: unchecked,
+    live_url: opts.skipLive && principal ? `/account/${encodeURIComponent(id.trim())}/holdings` : null,
+    holdings_source: fromIndex.size ? `ICPWatch block index for ${fromIndex.size} reconciled ledgers, icrc1_balance_of on the rest` : "icrc1_balance_of on each ledger", total_usd: total,
     icp_txs: { token_id: ICP_LEDGER, symbol: "ICP", txs: (txs.v?.txs ?? []).map(label), next_start: txs.v?.nextStart ?? null, source: "ICP index canister", fetched_at: ts, error: txs.error },
     token_txs: wantToken
       ? {
