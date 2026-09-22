@@ -538,3 +538,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl.compare th:first-child { text-align: left; font-weight: 500; color: var(--text-2); white-space: nowrap; }
 .tbl.compare thead th .name { justify-content: flex-end; }
 .tbl.compare td.best { color: var(--up); font-weight: 600; }
+
+/* Token links */
+.links { display: flex; gap: 8px; flex-wrap: wrap; }
+.link-chip { text-decoration: none; display: inline-flex; gap: 5px; align-items: center; padding: 5px 10px; font-size: 12.5px; }
+.link-chip b { color: var(--text); font-weight: 600; }

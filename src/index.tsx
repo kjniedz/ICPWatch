@@ -38,6 +38,8 @@ import { SnsDashboardPage } from "./pages/snsdash";
 import { ComparePage, Launches, ProposalsFeedPage, UnlocksPage } from "./pages/snsfeed";
 import { launches, proposalFeed, unlockCalendar } from "./sns/feed";
 import { HoldersPage } from "./pages/holders";
+import { AboutSection, LinkSubmitPage, LinksAdmin } from "./pages/meta";
+import { collectTokenMeta, descriptionFor, linksFor, pendingLinks, reviewLink, submitLink } from "./meta";
 import { entityMix, holderDailyJob, holderHistory, holderStatsCached, holdersCsv, holdersPage } from "./holders";
 import { listSnsDaos, toView, totals as snsTotals } from "./sns/queries";
 import { HomePage } from "./pages/home";
@@ -275,14 +277,39 @@ app.get("/token/:id", async (c) => {
     q.getMarket(db, t.id), q.canistersForToken(db, t.id), q.poolsForToken(db, t.id), holdersFor(c.env, t),
     q.kvGet<SnsSectionData>(db, `sns:${t.id}`), db.prepare("SELECT * FROM trust_scores WHERE token_id = ?").bind(t.id).first<StoredTrust>(),
   ]);
-  const incidents = await q.recentIncidents(db, 8, canisters.map((x) => x.id));
+  const [incidents, links, description] = await Promise.all([q.recentIncidents(db, 8, canisters.map((x) => x.id)), linksFor(db, t.id).catch(() => []), descriptionFor(db, t.id).catch(() => null)]);
+  const about = <AboutSection tokenId={t.id} symbol={t.symbol} description={description} links={links} fallback={{ description: t.description, url: t.url }} />;
   return page(c, {
     title: `${t.name} (${t.symbol}) price, liquidity, and canister health`, path: `/token/${t.id}`, section: "markets", chart: true,
-    description: `${t.symbol} ${m?.price_usd != null ? `is ${fmtUsd(m.price_usd)} ` : "price "}aggregated across ICP DEXs, with market cap, liquidity, top holders, trust score, and the cycle health of its ledger, index, and archive canisters.`,
+    description: `${t.symbol} ${m?.price_usd != null ? `is ${fmtUsd(m.price_usd)} ` : "price "}aggregated across ICP DEXs, with market cap, liquidity, top holders, trust score, and the cycle health of its ledger, index, and archive canisters.${description ? ` ${description.text.split(". ")[0]}.` : ""}`.slice(0, 300),
     crumbs: [["Markets", "/markets"], [`${t.name} (${t.symbol})`, `/token/${t.id}`]],
     jsonLd: { "@context": "https://schema.org", "@type": "WebPage", name: `${t.name} (${t.symbol})`, url: `https://icpwatch.com/token/${t.id}`, dateModified: m?.updated_at ? new Date(m.updated_at * 1000).toISOString() : undefined,
       about: { "@type": "Thing", name: t.name, alternateName: t.symbol, identifier: t.id, description: `ICRC-1 token on the Internet Computer, ledger canister ${t.id}` } },
-  }, <TokenPage t={t} m={m} canisters={canisters} pools={pools} incidents={incidents} trust={trust} sns={sns ? { ...sns.value, fetched_at: sns.fetched_at, source: sns.source } : null} holders={holders} />);
+  }, <TokenPage t={t} m={m} canisters={canisters} pools={pools} incidents={incidents} trust={trust} sns={sns ? { ...sns.value, fetched_at: sns.fetched_at, source: sns.source } : null} holders={holders} about={about} />);
+});
+app.get("/token/:id/links", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return page(c, { title: "Token not found", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That token is not tracked." />, 404);
+  return page(c, { title: `Suggest a link for ${t.symbol}`, path: `/token/${t.id}/links`, section: "markets", description: `Suggest an official link for ${t.name}.`, noindex: true }, <LinkSubmitPage tokenId={t.id} symbol={t.symbol} name={t.name} />);
+});
+app.post("/token/:id/links", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.text("unknown token", 404);
+  const form = await c.req.parseBody();
+  const r = form.website ? { ok: true, message: "Thanks." } : await submitLink(c.env.DB, t.id, String(form.url ?? ""), form.note ? String(form.note).slice(0, 300) : undefined, form.contact ? String(form.contact).slice(0, 120) : undefined);
+  return page(c, { title: `Suggest a link for ${t.symbol}`, path: `/token/${t.id}/links`, section: "markets", description: "", noindex: true }, <LinkSubmitPage tokenId={t.id} symbol={t.symbol} name={t.name} result={r} />);
+});
+app.get("/admin/meta/links", async (c) => {
+  if (!authed(c) && c.req.query("token") !== c.env.ADMIN_TOKEN) return c.json({ error: "unauthorized" }, 401);
+  const status = c.req.query("status") ?? "pending";
+  return page(c, { title: "Link review", path: "/admin/meta/links", section: "none", description: "", noindex: true }, <LinksAdmin items={await pendingLinks(c.env.DB, status)} status={status} token={c.env.ADMIN_TOKEN ?? ""} />);
+});
+app.post("/admin/meta/review", async (c) => {
+  const form = await c.req.parseBody();
+  const token = c.req.header("authorization")?.replace(/^Bearer /, "") ?? String(form.token ?? "");
+  if (!c.env.ADMIN_TOKEN || token !== c.env.ADMIN_TOKEN) return c.json({ error: "unauthorized" }, 401);
+  const r = await reviewLink(c.env.DB, String(form.token_id), String(form.url), String(form.decision) === "approve", form.note ? String(form.note) : undefined, form.kind ? (String(form.kind) as never) : undefined);
+  return c.req.header("accept")?.includes("text/html") ? c.redirect(`/admin/meta/links?token=${c.env.ADMIN_TOKEN}`, 303) : c.json(r);
 });
 
 app.get("/token/:id/holders", async (c) => {
@@ -811,6 +838,7 @@ const JOBS = {
   "life-support": (env: Env) => lifeSupportTick(env, { dryRun: env.LIFE_SUPPORT_ENABLED !== "true" }),
   history: (env: Env) => runHistory(env),
   "holder-daily": (env: Env) => holderDailyJob(env),
+  "token-meta": (env: Env) => collectTokenMeta(env),
 } satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
 /**
@@ -936,7 +964,7 @@ export default {
           break;
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
-        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "life-support"); break;
+        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); break;
       }
     };

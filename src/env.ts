@@ -12,6 +12,8 @@ export interface Env {
   /** From address for alert email, e.g. "ICPWatch Lifeline <alerts@icpwatch.com>". */
   EMAIL_FROM?: string;
   TELEGRAM_BOT_TOKEN?: string;
+  /** CoinGecko demo key for token links. Without it the keyless tier is shared with every other Worker and is usually exhausted. */
+  COINGECKO_API_KEY?: string;
   /** Life support spends real ICP. It only goes live when this is exactly "true" AND an identity is set AND the DB kill switch is released. */
   LIFE_SUPPORT_ENABLED?: string;
   /** 32 byte Ed25519 seed (hex or base64) of the funding identity. */

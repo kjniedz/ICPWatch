@@ -1,3 +1,4 @@
+import type { Child } from "hono/jsx";
 import type { CanisterRow, IncidentRow, MarketRow, PoolRow, TokenRow } from "../db/queries";
 import { ago, fmtBytes, fmtCompact, fmtCycles, fmtNum, fmtPct, fmtUsd, fromBase, isoDate, now, pctClass, shortDate, shortId, span } from "../lib/format";
 import { Conf, CopyId, Crumbs, Empty, Fresh, HealthPill, TokenLogo, sourceName } from "../ui/components";
@@ -31,8 +32,8 @@ export interface SnsInfo {
   proposals: { id: number; title: string; status: string }[]; fetched_at: number; source: string;
 }
 
-export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, trust }: {
-  t: TokenRow; trust: StoredTrust | null; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsSectionData | null;
+export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, trust, about }: {
+  t: TokenRow; trust: StoredTrust | null; about?: Child; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsSectionData | null;
   holders: {
     rows: { account: string; balance: number; share: number | null; label?: EntityLabel | null }[]; total: number | null; top10?: number | null; fetched_at: number; source: string;
     /** Set while our own index is still replaying this ledger: the list then comes from the third-party fallback. */
@@ -155,7 +156,7 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, tru
       ) : <div class="card"><Empty>Holder distribution for this token has not been indexed yet.</Empty></div>}
       {holders && holders.total != null ? <div style="margin-top:10px"><a class="btn btn-ghost" href={`/token/${t.id}/holders`}>All holders, concentration, and CSV &rarr;</a></div> : null}
 
-      {t.description ? (<><div class="sec-head"><h2>About</h2></div><div class="card card-pad" style="color:var(--text-2)">{t.description}{t.url ? <> <a class="link" href={t.url} rel="noopener nofollow">{t.url.replace(/^https?:\/\//, "")}</a></> : null}</div></>) : null}
+      {about ?? (t.description ? (<><div class="sec-head"><h2>About</h2></div><div class="card card-pad" style="color:var(--text-2)">{t.description}{t.url ? <> <a class="link" href={t.url} rel="noopener nofollow">{t.url.replace(/^https?:\/\//, "")}</a></> : null}</div></>) : null)}
     </div>
   );
 }
