@@ -98,6 +98,15 @@ describe("burnRate", () => {
     expect(burnRate(s, 0, DAY, 6 * 3600)! / 1e9).toBeCloseTo(27 * 24, 0);
   });
 
+  it("reads a churning balance that trends up as zero burn (the ckETH minter case)", () => {
+    // Observed: hourly deltas of +16 T, +17 T, -6 T, +41 T, -35 T, +20 T, -4 T, -12 T, +1.5 T while the
+    // balance rose from 402 T to 440 T over the window.
+    const deltas = [16.3, 16.8, -6.4, 40.9, -35.5, 19.7, -4.0, -12.4, 1.5, 1.4];
+    const s: Sample[] = [{ ts: 0, cycles: 402e12 }];
+    deltas.forEach((d, i) => s.push({ ts: (i + 1) * 3600, cycles: s[i]!.cycles + d * 1e12 }));
+    expect(burnRate(s, 0, DAY, 6 * 3600)).toBe(0);
+  });
+
   it("needs at least 30 minutes of coverage", () => {
     expect(burnRate(series(100 * T, 1, 2), 0, DAY)).toBeNull();
   });

@@ -114,6 +114,12 @@ export function burnRate(samples: Sample[], fromTs: number, toTs: number, minCov
   // Short windows turn a tiny balance change into a huge daily rate (a timer firing, an archive
   // flush), so callers that project or alert ask for hours of clean coverage, not minutes.
   if (covered < minCoverageS || !intervals.length) return null;
+  // Net trend across the window: a balance that is not falling has no runway problem, whatever
+  // the intervals look like. Minters and busy dapps move tens of trillions in and out every hour.
+  const inWindow = samples.filter((s) => s.ts >= fromTs && s.ts <= toTs);
+  const first = inWindow[0];
+  const last = inWindow[inWindow.length - 1];
+  const net = first && last && last.ts > first.ts ? (first.cycles - last.cycles) / (last.ts - first.ts) : null;
   intervals.sort((x, y) => x.rate - y.rate);
   let acc = 0;
   let med = intervals[intervals.length - 1]!.rate;
@@ -124,7 +130,10 @@ export function burnRate(samples: Sample[], fromTs: number, toTs: number, minCov
       break;
     }
   }
-  return Math.max(0, med) * DAY; // net inflow reads as zero burn, never negative
+  // The smaller of the two: the median discounts transfers, the net trend discounts churn. A canister
+  // topped up inside the window is underestimated until the top-up leaves it, which errs on the quiet side.
+  const rate = net == null ? med : Math.min(med, net);
+  return Math.max(0, rate) * DAY; // net inflow reads as zero burn, never negative
 }
 
 /** Daily burn values (cycles per day) for each full UTC day covered by the samples. */
