@@ -80,7 +80,7 @@ export function Layout({ meta, children, links }: { meta: PageMeta; children?: C
       <body>
         <Header section={meta.section} />
         <main>{children}</main>
-        <Footer />
+        <Footer links={links} />
       </body>
     </html>
   );
@@ -146,7 +146,7 @@ const socials: [string, string, string | null][] = [
   ["OC", "OpenChat", null],
 ];
 
-function Footer() {
+function Footer({ links }: { links?: SiteLinks }) {
   return (
     <footer class="ftr">
       <div class="ftr-in">
