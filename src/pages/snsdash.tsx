@@ -1,4 +1,5 @@
 // /sns: every SNS DAO on one page. The columns other trackers show, plus the ones only we can:
+import type { Child } from "hono/jsx";
 // trust score, Lifeline health across the whole DAO's canisters, and treasury movement counts.
 import { fmtCompact, fmtNum, fmtPct, fmtUsd, pctClass, shortDate } from "../lib/format";
 import type { SnsDaoView, SnsTotals } from "../sns/queries";
@@ -14,7 +15,7 @@ function Roi({ v }: { v: number | null }) {
   return <span class={`num ${cls}`} title="Current ICP value of 1 ICP put into the decentralization swap, minus 1">{v >= 0 ? "+" : ""}{(v * 100).toFixed(0)}%</span>;
 }
 
-export function SnsDashboardPage({ views, totals, fetchedAt }: { views: SnsDaoView[]; totals: SnsTotals; fetchedAt: number | null }) {
+export function SnsDashboardPage({ views, totals, fetchedAt, launches }: { views: SnsDaoView[]; totals: SnsTotals; fetchedAt: number | null; launches: Child }) {
   return (
     <div class="wrap page" style="max-width:1400px">
       <Crumbs items={[["Markets", "/markets"], ["SNS DAOs", null]]} />
@@ -124,6 +125,9 @@ export function SnsDashboardPage({ views, totals, fetchedAt }: { views: SnsDaoVi
       <div class="src" style="margin-top:10px">
         Treasury: governance canister's ICP account and token-distribution subaccount, valued at our aggregated DEX prices. Swap ROI uses the swap's final tokens-per-ICP rate. Neurons and voting power: governance canister metrics. Turnout and proposal counts: our own proposal index, read from each governance canister. Trust: <a class="link" href="/trust-score">method 1.0</a>. Health: worst Lifeline state across every canister the SNS root reports.
       </div>
+
+      <div class="sec-head" style="margin-top:28px"><h2>Launches</h2><span class="note">Open and pending swaps, and NNS proposals to create a new SNS</span></div>
+      {launches}
 
       <div class="sec-head" style="margin-top:28px"><h2>Recent swaps</h2></div>
       <div class="card tbl-wrap">

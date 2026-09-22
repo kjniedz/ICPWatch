@@ -517,3 +517,24 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl.mini .bar { display: block; height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
 .tbl.mini .bar b { display: block; height: 100%; background: var(--blue); }
 .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; }
+
+/* SNS feed, unlocks, compare */
+.feed-item.prop .line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 3px; }
+.feed-item.prop .dao { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); }
+.feed-item.prop .dao img, .feed-item.prop .dao .logo { width: 18px; height: 18px; }
+.feed-item.prop .state { margin-left: auto; font-size: 11.5px; color: var(--text-2); }
+.feed-item.prop .state.open { color: var(--blue); font-weight: 600; }
+.feed-item.prop .state.rejected, .feed-item.prop .state.failed { color: var(--down); }
+.chip-warn { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+.filters .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+.unlock-row { display: grid; grid-template-columns: 90px 1fr 90px; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.unlock-row:last-child { border-bottom: 0; }
+.unlock-row .m { font-weight: 600; }
+.unlock-row .bar { height: 10px; border-radius: 5px; background: var(--border); overflow: hidden; }
+.unlock-row .bar b { display: block; height: 100%; background: var(--orange); }
+.unlock-row .v { text-align: right; font-weight: 600; }
+.unlock-row .d { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.unlock-row .d .chip { text-decoration: none; }
+.tbl.compare th:first-child { text-align: left; font-weight: 500; color: var(--text-2); white-space: nowrap; }
+.tbl.compare thead th .name { justify-content: flex-end; }
+.tbl.compare td.best { color: var(--up); font-weight: 600; }

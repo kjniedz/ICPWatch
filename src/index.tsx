@@ -35,6 +35,8 @@ import { ApiDocs, Changelog, Disclaimer, Docs, Faq, FormPage, HowItWorks, NotFou
 import { CanisterPage, TokenPage } from "./pages/detail";
 import type { SnsSectionData } from "./pages/sns";
 import { SnsDashboardPage } from "./pages/snsdash";
+import { ComparePage, Launches, ProposalsFeedPage, UnlocksPage } from "./pages/snsfeed";
+import { launches, proposalFeed, unlockCalendar } from "./sns/feed";
 import { HoldersPage } from "./pages/holders";
 import { entityMix, holderDailyJob, holderHistory, holderStatsCached, holdersCsv, holdersPage } from "./holders";
 import { listSnsDaos, toView, totals as snsTotals } from "./sns/queries";
@@ -323,14 +325,51 @@ app.get("/token/:id/holders.csv", async (c) => {
 
 app.get("/sns", async (c) => {
   const ts = now();
-  const rows = await listSnsDaos(c.env.DB, ts);
+  const [rows, launch] = await Promise.all([listSnsDaos(c.env.DB, ts), launches(c.env.DB)]);
   const views = rows.map((r) => toView(r, ts));
   const fetchedAt = rows.reduce<number | null>((m, r) => (r.sns_fetched_at != null && (m == null || r.sns_fetched_at > m) ? r.sns_fetched_at : m), null);
   return page(c, {
     title: "SNS DAOs: treasuries, governance, and health of every Internet Computer DAO", path: "/sns", section: "markets",
     description: "Every SNS DAO on the Internet Computer with price, market cap, treasury in ICP and tokens, treasury as a share of market cap, swap ROI, neurons, voting power, 30-day turnout, proposals, trust score, and canister health. Dead DAOs included and marked.",
     crumbs: [["Markets", "/markets"], ["SNS DAOs", "/sns"]],
-  }, <SnsDashboardPage views={views} totals={snsTotals(views)} fetchedAt={fetchedAt} />);
+  }, <SnsDashboardPage views={views} totals={snsTotals(views)} fetchedAt={fetchedAt} launches={<Launches items={launch} />} />);
+});
+app.get("/sns/proposals", async (c) => {
+  const dao = c.req.query("dao") ?? "";
+  const state = (["open", "decided"].includes(c.req.query("state") ?? "") ? c.req.query("state") : "all") as "open" | "decided" | "all";
+  const kind = (["treasury", "upgrade", "motion"].includes(c.req.query("kind") ?? "") ? c.req.query("kind") : "all") as "treasury" | "upgrade" | "motion" | "all";
+  const before = Number(c.req.query("before")) || undefined;
+  const [items, daos] = await Promise.all([
+    proposalFeed(c.env.DB, { dao: dao || undefined, state, kind, before, limit: 50 }),
+    c.env.DB.prepare("SELECT id, symbol, name FROM tokens WHERE kind = 'sns' ORDER BY name").all<{ id: string; symbol: string; name: string }>().then((r) => r.results),
+  ]);
+  const labels = await labelsFor(c.env.DB, items.map((p) => p.treasury_to).filter((x): x is string => !!x));
+  const daoName = daos.find((d) => d.id === dao);
+  return page(c, {
+    title: daoName ? `${daoName.name} proposals` : "SNS proposals across every DAO", path: "/sns/proposals", section: "markets", noindex: !!before,
+    description: "A live feed of governance proposals across every SNS DAO on the Internet Computer: treasury transfers and mints, upgrades, motions, with votes, turnout, and deadlines.",
+    crumbs: [["Markets", "/markets"], ["SNS DAOs", "/sns"], ["Proposals", "/sns/proposals"]],
+  }, <ProposalsFeedPage items={items} daos={daos} filter={{ dao, state, kind }} labels={labels} />);
+});
+app.get("/sns/unlocks", async (c) => {
+  const [cal, walked] = await Promise.all([unlockCalendar(c.env.DB), c.env.DB.prepare("SELECT MAX(seen_at) t FROM sns_neurons").first<{ t: number | null }>()]);
+  return page(c, {
+    title: "SNS unlock calendar: when staked tokens become liquid", path: "/sns/unlocks", section: "markets",
+    description: "Month by month, how much SNS stake is dissolving across every Internet Computer DAO, the largest single neurons unlocking, and what is locked with no date.",
+    crumbs: [["Markets", "/markets"], ["SNS DAOs", "/sns"], ["Unlock calendar", "/sns/unlocks"]],
+  }, <UnlocksPage buckets={cal.buckets} big={cal.big} locked={cal.lockedNoDate} fetchedAt={walked?.t ?? null} />);
+});
+app.get("/sns/compare", async (c) => {
+  const ts = now();
+  const rows = await listSnsDaos(c.env.DB, ts);
+  const all = rows.map((r) => toView(r, ts));
+  const ids = c.req.queries("dao")?.filter(Boolean).slice(0, 4) ?? [];
+  const picked = ids.map((id) => all.find((v) => v.row.id === id)).filter((v): v is NonNullable<typeof v> => !!v);
+  return page(c, {
+    title: picked.length >= 2 ? `Compare ${picked.map((v) => v.row.symbol).join(" vs ")}` : "Compare SNS DAOs", path: "/sns/compare", section: "markets", noindex: picked.length > 0,
+    description: "Put two to four Internet Computer SNS DAOs side by side: treasury, market cap, swap ROI, neurons, turnout, trust score, and canister health.",
+    crumbs: [["Markets", "/markets"], ["SNS DAOs", "/sns"], ["Compare", "/sns/compare"]],
+  }, <ComparePage all={all} picked={picked} />);
 });
 
 app.get("/markets", async (c) => {
@@ -865,7 +904,7 @@ app.get("/sitemap.xml", async (c) => {
   const today = day(now());
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
-    ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
+    ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/sns/proposals", today, 0.7], ["/sns/unlocks", today, 0.7], ["/sns/compare", null, 0.5], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
     ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
