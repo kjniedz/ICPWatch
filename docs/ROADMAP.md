@@ -32,3 +32,17 @@ Status key: shipped, building, next, later. Order inside a tier is priority orde
 - On-chain reads first. Third-party sources sit behind adapters and are labeled.
 - Every number shows its source and its age. An honest "unknown" beats a confident guess.
 - Anything that spends cycles or ICP is flagged before it runs and is off by default.
+
+## Shipped 2026-09-22, second brief (groups 1 to 10)
+
+1. Token metadata: links with provenance and a corroboration rule (`/admin/meta/links`), original ICPWatch descriptions. Price and volume alerts (`/markets/alerts`).
+2. Telegram bot (`/telegram`): commands, chat subscriptions, group feeds with hourly caps and quiet hours. Needs `TELEGRAM_BOT_TOKEN`.
+3. Holder snapshots (`/token/:id/snapshot`, `/snapshots`): block-stamped, hashed, permanent.
+4. Launchpad feed (`/markets/launchpad`, FomoWell on chain) with bundled-buy and creator-sold flags; `liquidity_drop` and `holder_dump` alerts.
+5. Claimed project profiles (`/token/:id/claim`): controller payment, DAO motion, or domain proof. Never touches the trust score.
+6. Smart money (`/markets/smart-money`) from our own large-transfer index.
+7. Tax export (`/account/:id/export.csv`, Koinly and CoinTracker).
+8. Cycles cost calculator (`/lifeline/calculator`) with measured-burn mode.
+9. Decentralization table and exchange flows (`/markets/decentralization`, `/markets/exchange-flows`); hubs are inferred until a citable exchange label exists.
+10. NFT collections (`/markets/nfts`) from each canister's own stats query.
+
