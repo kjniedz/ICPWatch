@@ -176,6 +176,7 @@ export function MarketsPage({ rows, pools, totals }: { rows: TokenMarketRow[]; p
           <button class="fpill" data-for="tokens" data-fkey="hstate" data-fval="risk" aria-pressed="false" title="Tokens whose ledger, index, or archives are low, frozen, or at risk">Health risk</button>
           <button class="fpill" data-for="tokens" data-fkey="hstate" data-fval="dead" aria-pressed="false" title="Tokens whose ledger canister has been uninstalled">Dead ledgers</button>
           <a class="fpill" href="/sns">SNS DAOs</a>
+          <a class="fpill" href="/markets/launchpad">Launchpad</a>
           <a class="fpill" href="/watchlist">&#9733; Watchlist</a>
           <a class="fpill" href="/markets/screener">Screener</a>
           <a class="fpill" href="/portfolio">Portfolio</a>

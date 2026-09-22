@@ -212,10 +212,10 @@ async function watchReply(db: D1Database, chatId: string, what: string | undefin
   const scope = t ? { type: "token", id: t.id, label: `${t.symbol} (ledger, index, archives)` } : (await q.getCanister(db, what)) ? { type: "canister", id: what, label: what } : null;
   if (!scope) return `I do not know "${what}". Add a canister first at ${site}/canister/${what}, or use a token symbol.`;
   const id = crypto.randomUUID().replace(/-/g, "");
-  const types = ["low_cycles", "frozen", "approaching_deletion", "burn_anomaly", "controller_change", "treasury_movement"];
+  const types = ["low_cycles", "frozen", "approaching_deletion", "burn_anomaly", "controller_change", "treasury_movement", "liquidity_drop", "holder_dump"];
   const r = await db.prepare("INSERT OR IGNORE INTO subscriptions (id, channel, target, scope_type, scope_id, types, verified, created_at) VALUES (?1, 'telegram', ?2, ?3, ?4, ?5, 1, ?6)")
     .bind(id, chatId, scope.type, scope.id, JSON.stringify(types), now()).run();
-  return r.meta.changes ? `Watching ${scope.label}. This chat gets low cycles, frozen, deletion risk, burn anomaly, controller change, and treasury movement alerts. /alerts lists them, /unsub removes one.` : `This chat already watches ${scope.label}.`;
+  return r.meta.changes ? `Watching ${scope.label}. This chat gets low cycles, frozen, deletion risk, burn anomaly, controller change, treasury movement, liquidity pulled, and top holder selling alerts. /alerts lists them, /unsub removes one.` : `This chat already watches ${scope.label}.`;
 }
 
 async function priceAlertReply(db: D1Database, chatId: string, args: string[]): Promise<string> {

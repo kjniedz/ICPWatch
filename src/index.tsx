@@ -42,6 +42,9 @@ import { AboutSection, LinkSubmitPage, LinksAdmin } from "./pages/meta";
 import { PriceAlertsPage } from "./pages/pricealerts";
 import { TelegramPage } from "./pages/telegram";
 import { SnapshotFormPage, SnapshotPage, SnapshotsIndexPage } from "./pages/snapshots";
+import { LaunchpadPage } from "./pages/launchpad";
+import { collectLaunchpad, listLaunches } from "./launchpad";
+import { evaluateRugSignals } from "./alerts/rug";
 import { getSnapshot, listSnapshots, parseCsv, parseFilters, snapshotCsv, takeSnapshot } from "./snapshots";
 import { handleUpdate, setupTelegram, telegramFeedsJob, webhookPath, type TgUpdate } from "./telegram";
 import { createRules, describeRule, evaluatePriceRules, parseRules, recentPriceEvents } from "./alerts/price";
@@ -184,6 +187,11 @@ function parseChannel(form: Record<string, unknown>): { channel: string; address
 
 const priceAlertsMeta: PageMeta = { title: "Price and volume alerts for ICP tokens", path: "/markets/alerts", section: "markets", description: "Alerts when any Internet Computer token crosses a price, moves more than a set percentage, or trades several times its usual volume. Email, Telegram, Discord, or webhook, with cooldowns." };
 
+app.get("/markets/launchpad", async (c) => {
+  const rows = await listLaunches(c.env.DB);
+  return page(c, { title: "ICP launchpad feed: new memecoins, bundled buys, and creator sells", path: "/markets/launchpad", section: "markets", description: "Every token launching on FomoWell, the Internet Computer's live launchpad, with bonding-curve progress, creator and top-5 share, LP lock, provisional grade, and flags for bundled buys and creators selling down.", crumbs: [["Markets", "/markets"], ["Launchpad", "/markets/launchpad"]] },
+    <LaunchpadPage rows={rows} fetchedAt={rows.reduce<number | null>((m, r) => (m == null || r.updated_at > m ? r.updated_at : m), null)} />);
+});
 app.get("/markets/alerts", async (c) => {
   const raw = c.req.query("token");
   const token = raw ? await q.getToken(c.env.DB, raw) : null;
@@ -971,6 +979,8 @@ const JOBS = {
   "holder-daily": (env: Env) => holderDailyJob(env),
   "token-meta": (env: Env) => collectTokenMeta(env),
   "price-alerts": (env: Env) => evaluatePriceRules(env),
+  "rug-signals": (env: Env) => evaluateRugSignals(env),
+  launchpad: (env: Env) => collectLaunchpad(env),
   "telegram-feeds": (env: Env) => telegramFeedsJob(env),
 } satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
@@ -1066,7 +1076,7 @@ app.get("/sitemap.xml", async (c) => {
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
     ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/sns/proposals", today, 0.7], ["/sns/unlocks", today, 0.7], ["/sns/compare", null, 0.5], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
-    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/snapshots", today, 0.5], ["/telegram", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
+    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/markets/launchpad", today, 0.7], ["/snapshots", today, 0.5], ["/telegram", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
     ...canisters.results.map((x) => [`/canister/${x.id}`, day(x.measured_at), 0.5] as [string, string | null, number]), ...subnets.results.map((s) => [`/subnet/${s.id}`, today, 0.5] as [string, string, number]),
@@ -1096,8 +1106,8 @@ export default {
           await runJob(env, "reserves");
           break;
         }
-        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "price-alerts"); await runJob(env, "telegram-feeds"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
-        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "life-support"); break;
+        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "price-alerts"); await runJob(env, "rug-signals"); await runJob(env, "telegram-feeds"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
+        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "launchpad"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); break;
       }
     };

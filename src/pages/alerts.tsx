@@ -55,6 +55,8 @@ export function AlertsPage({ target, channels, result }: {
             <label class="check"><input type="checkbox" name="types" value="controller_change" checked /><span><b>Controllers changed</b>Someone was added to or removed from the canister's controllers. The ICP version of "admin key changed".</span></label>
             <label class="check"><input type="checkbox" name="types" value="sns_proposal" /><span><b>New SNS proposal</b>For a token subscription on an SNS DAO: every new proposal, as it opens.</span></label>
             <label class="check"><input type="checkbox" name="types" value="treasury_movement" checked /><span><b>Treasury movement</b>A proposal that would transfer or mint from the DAO treasury.</span></label>
+            <label class="check"><input type="checkbox" name="types" value="liquidity_drop" checked /><span><b>Liquidity pulled</b>The token's DEX liquidity fell more than 30% in an hour or 50% in a day.</span></label>
+            <label class="check"><input type="checkbox" name="types" value="holder_dump" checked /><span><b>Top holder selling</b>A top-10 holder moved more than 1% of supply into a DEX pool within an hour.</span></label>
             <label class="check"><input type="checkbox" name="types" value="module_change" /><span><b>Code changed</b>The canister was upgraded, reinstalled, or uninstalled. Routine for active projects, so off by default.</span></label>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import type { CanisterRow, IncidentRow, LifelineSummary, TokenHealthRow } from "../db/queries";
+import { EVENT_TYPES } from "../lib/health";
 import { ago, fmtCycles, fmtNum, isoDate, now, span } from "../lib/format";
 import { Conf, Empty, Fresh, HealthPill, TokenLogo } from "../ui/components";
 import { FundLink } from "./fund";
@@ -111,7 +112,7 @@ export function IncidentFeed({ items }: { items: IncidentRow[] }) {
     <div class="stack">
       {items.map((i) => {
         // Controller and code changes are point-in-time events: stored closed, never shown as "resolved".
-        const resolved = i.state === "resolved" && !["controller_change", "module_change", "sns_proposal", "treasury_movement"].includes(i.type);
+        const resolved = i.state === "resolved" && !(EVENT_TYPES as string[]).includes(i.type);
         return (
           <a class="card feed-item" href={`/canister/${i.canister_id}`}>
             <span class={`d ${resolved ? "ok" : (incidentDot[i.type] ?? "risk")}`} aria-hidden="true"></span>
