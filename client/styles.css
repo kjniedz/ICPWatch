@@ -502,3 +502,18 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ent-inferred .ent-tag { border: 1px dashed var(--risk-fg); color: var(--risk-fg); }
 .ent-community .ent-tag { background: var(--life-bg); color: var(--life-fg); }
 .ent-id { font-size: 11px; color: var(--muted); }
+
+/* Holder pages */
+.donut { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.donut svg { flex: 0 0 auto; }
+.donut circle { transition: stroke-width .15s; }
+.donut circle:hover { stroke-width: 18; }
+.legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; min-width: 0; flex: 1; }
+.legend li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.legend li > span, .legend li > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.legend li b { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.legend i, .sw { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; display: inline-block; vertical-align: middle; }
+.tbl.mini td { padding: 5px 6px; font-size: 12.5px; }
+.tbl.mini .bar { display: block; height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.tbl.mini .bar b { display: block; height: 100%; background: var(--blue); }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; }

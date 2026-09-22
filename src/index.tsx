@@ -23,7 +23,7 @@ import { SupportersList } from "./pages/fund";
 import { isTreasuryOrPool } from "./labels";
 import { holderStats, indexFailures, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
-import { fmtUsd, now } from "./lib/format";
+import { fmtNum, fmtUsd, now } from "./lib/format";
 import { ALERT_TYPES, EVENT_TYPES } from "./lib/health";
 import { enroll, lifeSupportTick, registry as lsRegistry, setCaps, setEnrollmentState, setKillSwitch, status as lsStatus } from "./lifesupport";
 import { LifeSupportRegistryPage } from "./pages/lifesupport";
@@ -35,6 +35,8 @@ import { ApiDocs, Changelog, Disclaimer, Docs, Faq, FormPage, HowItWorks, NotFou
 import { CanisterPage, TokenPage } from "./pages/detail";
 import type { SnsSectionData } from "./pages/sns";
 import { SnsDashboardPage } from "./pages/snsdash";
+import { HoldersPage } from "./pages/holders";
+import { entityMix, holderDailyJob, holderHistory, holderStatsCached, holdersCsv, holdersPage } from "./holders";
 import { listSnsDaos, toView, totals as snsTotals } from "./sns/queries";
 import { HomePage } from "./pages/home";
 import { LifelineLive, LifelinePage } from "./pages/lifeline";
@@ -43,6 +45,7 @@ import { NewListingsPage, PoolsPage, PortfolioPage, ScreenerPage, SearchPage, Un
 import { NetworkPage, ProposalPage, ProposalsPage, SubnetPage, SubnetsPage, type NetworkStats } from "./pages/network";
 import { DataSources } from "./pages/sources";
 import { Layout, type PageMeta } from "./ui/layout";
+import { Crumbs, Empty } from "./ui/components";
 
 type C = Context<{ Bindings: Env }>;
 const app = new Hono<{ Bindings: Env }>();
@@ -278,6 +281,42 @@ app.get("/token/:id", async (c) => {
     jsonLd: { "@context": "https://schema.org", "@type": "WebPage", name: `${t.name} (${t.symbol})`, url: `https://icpwatch.com/token/${t.id}`, dateModified: m?.updated_at ? new Date(m.updated_at * 1000).toISOString() : undefined,
       about: { "@type": "Thing", name: t.name, alternateName: t.symbol, identifier: t.id, description: `ICRC-1 token on the Internet Computer, ledger canister ${t.id}` } },
   }, <TokenPage t={t} m={m} canisters={canisters} pools={pools} incidents={incidents} trust={trust} sns={sns ? { ...sns.value, fetched_at: sns.fetched_at, source: sns.source } : null} holders={holders} />);
+});
+
+app.get("/token/:id/holders", async (c) => {
+  const db = c.env.DB;
+  const t = await q.getToken(db, c.req.param("id"));
+  if (!t) return page(c, { title: "Token not found", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That token is not tracked." />, 404);
+  const pageNo = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
+  const query = c.req.query("q") ?? "";
+  const progress = await indexProgress(db, t.id).catch(() => null);
+  const supply = progress && t.total_supply && /^\d+$/.test(t.total_supply) ? Number(BigInt(t.total_supply)) / 10 ** progress.decimals : null;
+  const [data, stats, history] = await Promise.all([
+    holdersPage(db, t.id, { page: pageNo, query, lookThrough: c.req.query("stake") !== "0", totalSupplyRaw: t.total_supply, progress }),
+    progress?.trusted ? holderStatsCached(db, t.id, progress.kind, supply) : Promise.resolve(null),
+    progress?.trusted ? holderHistory(db, t.id) : Promise.resolve([]),
+  ]);
+  if (!data || !stats) {
+    return page(c, { title: `${t.symbol} holders`, path: `/token/${t.id}/holders`, section: "markets", description: `Holder distribution for ${t.name} is being indexed.`, noindex: true },
+      <div class="wrap page narrow"><Crumbs items={[["Markets", "/markets"], [`${t.name} (${t.symbol})`, `/token/${t.id}`], ["Holders", null]]} /><div class="page-head"><div><h1>{t.symbol} holders</h1></div></div>
+        <div class="card"><Empty>ICPWatch has not finished replaying and reconciling this ledger yet, so there is no holder list we would stand behind. The <a class="link" href={`/token/${t.id}#holders`}>token page</a> shows what we have so far.</Empty></div></div>);
+  }
+  const { conc, buckets } = stats;
+  const mix = entityMix(data.rows, data.supplyUnits);
+  const meta: PageMeta = {
+    title: `${t.name} (${t.symbol}) holders: distribution, concentration, and top accounts`, path: `/token/${t.id}/holders`, section: "markets",
+    description: `${fmtNum(conc.holders)} accounts hold ${t.symbol}. Top 10 hold ${conc.top10Share != null ? (conc.top10Share * 100).toFixed(1) : "n/a"}%, Gini ${conc.gini?.toFixed(2) ?? "n/a"}, Nakamoto ${conc.nakamoto ?? "n/a"}. Full paginated holder list with entity labels, balance bands, holder count over time, and CSV export, from ICPWatch's own reconciled ledger index.`,
+    crumbs: [["Markets", "/markets"], [`${t.name} (${t.symbol})`, `/token/${t.id}`], ["Holders", `/token/${t.id}/holders`]],
+    noindex: pageNo > 1 || !!query,
+  };
+  return page(c, meta, <HoldersPage t={t} data={data} conc={conc} buckets={buckets} mix={mix} history={history} />);
+});
+app.get("/token/:id/holders.csv", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.text("unknown token", 404);
+  const csv = await holdersCsv(c.env.DB, t.id, { lookThrough: c.req.query("stake") !== "0", totalSupplyRaw: t.total_supply, symbol: t.symbol });
+  if (!csv) return c.text("holder index for this ledger is not reconciled yet", 409);
+  return c.body(csv, 200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${t.symbol.toLowerCase()}-holders.csv"`, "cache-control": "public, max-age=300" });
 });
 
 // ---- markets ---------------------------------------------------------------------------------------------
@@ -611,6 +650,14 @@ api.get("/token/:id", async (c) => {
   const [market, canisters, pools] = await Promise.all([q.getMarket(c.env.DB, t.id), q.canistersForToken(c.env.DB, t.id), q.poolsForToken(c.env.DB, t.id)]);
   return c.json({ token: t, market, canisters, pools });
 });
+api.get("/token/:id/holders", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.json({ error: "unknown token" }, 404);
+  const data = await holdersPage(c.env.DB, t.id, { page: Math.max(1, Number(c.req.query("page") ?? 1) || 1), query: c.req.query("q") ?? "", lookThrough: c.req.query("stake") !== "0", totalSupplyRaw: t.total_supply });
+  if (!data) return c.json({ error: "holder index for this ledger is not reconciled yet" }, 409);
+  const { progress, ...rest } = data;
+  return c.json({ ...rest, as_of_block_ts: progress.asOfTs, block: progress.nextBlock - 1, reconciled_at: progress.reconciledAt, source: "ICPWatch block index, reconciled against icrc1_total_supply" }, 200, { "cache-control": "public, max-age=300" });
+});
 api.get("/token/:id/prices", async (c) => {
   const key = c.req.query("range") ?? "7d";
   const range = RANGES[key] ?? RANGES["7d"]!;
@@ -724,6 +771,7 @@ const JOBS = {
   // Dry run unless explicitly enabled. Even then the engine's own gate (identity, kill switch, caps) decides.
   "life-support": (env: Env) => lifeSupportTick(env, { dryRun: env.LIFE_SUPPORT_ENABLED !== "true" }),
   history: (env: Env) => runHistory(env),
+  "holder-daily": (env: Env) => holderDailyJob(env),
 } satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
 /**
@@ -850,7 +898,7 @@ export default {
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
         case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "life-support"); break;
-        case "23 3 * * *": await runJob(env, "rollup"); break;
+        case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); break;
       }
     };
     ctx.waitUntil(run());

@@ -128,7 +128,7 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, tru
 
       {sns ? <SnsDaoSection sns={sns} symbol={t.symbol} /> : null}
 
-      <div class="sec-head"><h2>Top holders</h2>{holders ? <Fresh ts={holders.fetched_at} source={holders.source} staleAfter={86400} /> : null}</div>
+      <div class="sec-head" id="holders"><h2>Top holders</h2>{holders ? <Fresh ts={holders.fetched_at} source={holders.source} staleAfter={86400} /> : null}</div>
       {holders && (holders.total != null || holders.top10 != null || holders.indexing) ? (
         <p class="note" style="margin:-6px 0 12px">
           {holders.total != null ? <><b style="color:var(--text)">{fmtNum(holders.total)}</b> accounts hold {t.symbol}. </> : null}
@@ -153,6 +153,7 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, tru
           </table>
         </div>
       ) : <div class="card"><Empty>Holder distribution for this token has not been indexed yet.</Empty></div>}
+      {holders && holders.total != null ? <div style="margin-top:10px"><a class="btn btn-ghost" href={`/token/${t.id}/holders`}>All holders, concentration, and CSV &rarr;</a></div> : null}
 
       {t.description ? (<><div class="sec-head"><h2>About</h2></div><div class="card card-pad" style="color:var(--text-2)">{t.description}{t.url ? <> <a class="link" href={t.url} rel="noopener nofollow">{t.url.replace(/^https?:\/\//, "")}</a></> : null}</div></>) : null}
     </div>
