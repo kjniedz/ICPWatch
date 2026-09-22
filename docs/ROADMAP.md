@@ -12,7 +12,7 @@ Status key: shipped, building, next, later. Order inside a tier is priority orde
 
 4. **Chain Fusion reserves** (shipped). ckBTC, ckETH, ckUSDC and the other ck assets: minter reserves on the native chain versus supply on ICP, mint and burn flows, peg deviation. Natural home for ckLTC when it ships.
 5. **Cycles economy** (next). ICP burned to mint cycles versus issuance from voting and node provider rewards: net inflation in real time. Sources: CMC `cmc_cycles_minted_total`, governance reward events, ledger burn totals.
-6. **SNS analytics** (building the collector). Treasury runway, voting participation, proposal pass and fail history, dissolve and unlock calendars, swap performance (launch price versus now), upcoming launch calendar from SNS-W.
+6. **SNS analytics** (shipped). `/sns` dashboard of every DAO (treasury, treasury as a share of market cap, swap ROI, neurons, voting power, turnout, proposals, trust, whole-DAO Lifeline health, dead DAOs marked), `/sns/proposals` cross-DAO feed with `sns_proposal` and `treasury_movement` alert types, `/sns/unlocks` dissolve calendar, `/sns/compare`, launches from open swaps and NNS SNS-creation proposals. Full holder pages at `/token/:id/holders` (paginated, searchable, CSV and JSON, SNS look-through, entity mix, balance bands, Gini and Nakamoto, daily holder snapshots) on reconciled ledgers only. Next: governance health scores and reward APY by lock length.
 7. **Governance and staking** (later). Dissolve delay distribution, reward APY by lock length, known neuron voting records, staking calculator, neurons in the portfolio view where the owner supplies neuron ids.
 
 ## Tier 3: Lifeline as a security product
