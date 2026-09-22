@@ -78,10 +78,12 @@ describe("burnRate", () => {
     expect(burnRate(s, 0, DAY)! / T).toBeCloseTo(0.144, 3);
   });
 
-  it("ignores top-ups instead of reporting negative or masked burn", () => {
+  it("reads a window containing a top-up as no net burn, never as negative burn", () => {
     const s = series(100 * T, 0.001 * T, 145);
     for (let i = 70; i < s.length; i++) s[i]!.cycles += 50 * T; // refill half way through
-    expect(burnRate(s, 0, DAY)! / T).toBeCloseTo(0.144, 3);
+    expect(burnRate(s, 0, DAY)).toBe(0);
+    // once the refill has left the window the steady burn shows again
+    expect(burnRate(s, 71 * 600, DAY)! / T).toBeCloseTo(0.144, 3);
   });
 
   it("ignores balance swings from cycles moving in and out (the SNS root case)", () => {
