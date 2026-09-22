@@ -84,6 +84,20 @@ describe("burnRate", () => {
     expect(burnRate(s, 0, DAY)! / T).toBeCloseTo(0.144, 3);
   });
 
+  it("ignores balance swings from cycles moving in and out (the SNS root case)", () => {
+    // Real pattern seen on the OpenChat SNS root: about 27 B burned per hour, plus 2.7 T leaving and
+    // returning every few hours. Summing drops would report about 400x the true burn.
+    const s: Sample[] = [];
+    let bal = 163e12;
+    for (let h = 0; h <= 24; h++) {
+      bal -= 27e9;
+      if (h === 4 || h === 12 || h === 20) bal -= 2.7e12;
+      if (h === 7 || h === 15 || h === 23) bal += 2.7e12;
+      s.push({ ts: h * 3600, cycles: bal });
+    }
+    expect(burnRate(s, 0, DAY, 6 * 3600)! / 1e9).toBeCloseTo(27 * 24, 0);
+  });
+
   it("needs at least 30 minutes of coverage", () => {
     expect(burnRate(series(100 * T, 1, 2), 0, DAY)).toBeNull();
   });

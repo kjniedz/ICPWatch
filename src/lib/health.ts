@@ -96,7 +96,11 @@ export function classify(f: CanisterFacts, p: Projection): HealthState {
  * so a refill never shows up as negative burn or hides real burn.
  */
 export function burnRate(samples: Sample[], fromTs: number, toTs: number, minCoverageS = 1800): number | null {
-  let burned = 0;
+  // Duration-weighted median of the per-interval rates. Summing drops and skipping rises looked
+  // reasonable until SNS roots and minters turned up whose balance swings by trillions in both
+  // directions as cycles move in and out: every drop counted as burn, every rise was "a top-up".
+  // The median ignores those transfers in either direction and keeps the steady underlying burn.
+  const intervals: { rate: number; dt: number }[] = [];
   let covered = 0;
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1]!;
@@ -104,15 +108,23 @@ export function burnRate(samples: Sample[], fromTs: number, toTs: number, minCov
     if (b.ts <= fromTs || a.ts >= toTs) continue;
     const dt = b.ts - a.ts;
     if (dt <= 0) continue;
-    const delta = a.cycles - b.cycles;
-    if (delta < 0) continue; // top-up
-    burned += delta;
+    intervals.push({ rate: (a.cycles - b.cycles) / dt, dt });
     covered += dt;
   }
   // Short windows turn a tiny balance change into a huge daily rate (a timer firing, an archive
   // flush), so callers that project or alert ask for hours of clean coverage, not minutes.
-  if (covered < minCoverageS) return null;
-  return (burned / covered) * DAY;
+  if (covered < minCoverageS || !intervals.length) return null;
+  intervals.sort((x, y) => x.rate - y.rate);
+  let acc = 0;
+  let med = intervals[intervals.length - 1]!.rate;
+  for (const iv of intervals) {
+    acc += iv.dt;
+    if (acc >= covered / 2) {
+      med = iv.rate;
+      break;
+    }
+  }
+  return Math.max(0, med) * DAY; // net inflow reads as zero burn, never negative
 }
 
 /** Daily burn values (cycles per day) for each full UTC day covered by the samples. */
