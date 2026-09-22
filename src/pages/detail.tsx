@@ -122,6 +122,7 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, tru
       <div class="sec-head" id="health">
         <h2>Canister health <span class="tag">Lifeline</span></h2>
         <a class="btn btn-primary btn-sm" href={`/lifeline/alerts?token=${t.id}`}>Get alerts for {t.symbol}</a>
+        <a class="btn btn-ghost btn-sm" href={`/markets/alerts?token=${t.id}`}>Price alert</a>
       </div>
       <CanisterTable rows={group} id="group" showToken={false} />
       {others.length ? (<><div class="sec-head"><h2>Related canisters</h2></div><CanisterTable rows={others} id="related" showToken={false} /></>) : null}

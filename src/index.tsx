@@ -39,6 +39,9 @@ import { ComparePage, Launches, ProposalsFeedPage, UnlocksPage } from "./pages/s
 import { launches, proposalFeed, unlockCalendar } from "./sns/feed";
 import { HoldersPage } from "./pages/holders";
 import { AboutSection, LinkSubmitPage, LinksAdmin } from "./pages/meta";
+import { PriceAlertsPage } from "./pages/pricealerts";
+import { createRules, describeRule, evaluatePriceRules, parseRules, recentPriceEvents } from "./alerts/price";
+import { sendMessage } from "./alerts/notify";
 import { collectTokenMeta, descriptionFor, linksFor, pendingLinks, reviewLink, submitLink } from "./meta";
 import { entityMix, holderDailyJob, holderHistory, holderStatsCached, holdersCsv, holdersPage } from "./holders";
 import { listSnsDaos, toView, totals as snsTotals } from "./sns/queries";
@@ -158,6 +161,79 @@ async function ensureWatched(env: Env, id: string): Promise<boolean> {
   return true;
 }
 
+/** Channel and address validation shared by every alert form. */
+function parseChannel(form: Record<string, unknown>): { channel: string; address: string } | { error: string } {
+  const channel = String(form.channel ?? "");
+  let address = String(form.target ?? "").trim();
+  if (channel === "email") {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(address) || address.length > 200) return { error: "That email address does not look right." };
+    address = address.toLowerCase();
+  } else if (channel === "telegram") {
+    if (!/^-?\d{5,16}$/.test(address)) return { error: "A Telegram chat id is a number. Message the bot with /start to get yours." };
+  } else if (channel === "discord" || channel === "webhook") {
+    const safe = safeTargetUrl(address, channel);
+    if (!safe) return { error: channel === "discord" ? "That is not a Discord webhook URL." : "Webhook URLs must be public https URLs." };
+    address = safe;
+  } else return { error: "Pick a channel." };
+  return { channel, address };
+}
+
+const priceAlertsMeta: PageMeta = { title: "Price and volume alerts for ICP tokens", path: "/markets/alerts", section: "markets", description: "Alerts when any Internet Computer token crosses a price, moves more than a set percentage, or trades several times its usual volume. Email, Telegram, Discord, or webhook, with cooldowns." };
+
+app.get("/markets/alerts", async (c) => {
+  const raw = c.req.query("token");
+  const token = raw ? await q.getToken(c.env.DB, raw) : null;
+  const [m, events] = await Promise.all([token ? q.getMarket(c.env.DB, token.id) : Promise.resolve(null), recentPriceEvents(c.env.DB, 40)]);
+  return page(c, priceAlertsMeta, <PriceAlertsPage token={token} price={m?.price_usd ?? null} channels={channelsConfigured(c.env)} events={events} />);
+});
+
+app.post("/markets/alerts", async (c) => {
+  const form = await c.req.parseBody();
+  const str = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, String(v)]));
+  const channels = channelsConfigured(c.env);
+  const events = await recentPriceEvents(c.env.DB, 40);
+  const token = await q.getToken(c.env.DB, String(form.token ?? ""));
+  const m = token ? await q.getMarket(c.env.DB, token.id) : null;
+  const fail = (message: string) => page(c, priceAlertsMeta, <PriceAlertsPage token={token} price={m?.price_usd ?? null} channels={channels} result={{ ok: false, message }} events={events} form={str} />);
+  if (form.website) return fail("Something went wrong. Please try again.");
+  if (!token) return fail("That is not a token symbol or ledger id we track.");
+  const parsed = parseRules(form as Record<string, unknown>);
+  if (parsed.error) return fail(parsed.error);
+  const ch = parseChannel(form as Record<string, unknown>);
+  if ("error" in ch) return fail(ch.error);
+  const { channel, address } = ch;
+
+  const id = crypto.randomUUID().replace(/-/g, "");
+  const verifyToken = crypto.randomUUID().replace(/-/g, "");
+  const secret = channel === "webhook" ? crypto.randomUUID().replace(/-/g, "") : null;
+  // One subscription per (channel, address, token): a second form submit adds rules to the existing one.
+  const existing = await c.env.DB.prepare("SELECT id, verified FROM subscriptions WHERE channel = ?1 AND target = ?2 AND scope_type = 'price' AND scope_id = ?3").bind(channel, address, token.id).first<{ id: string; verified: number }>();
+  const subId = existing?.id ?? id;
+  if (!existing) {
+    await c.env.DB.prepare("INSERT INTO subscriptions (id, channel, target, scope_type, scope_id, types, verified, verify_token, secret, created_at) VALUES (?, ?, ?, 'price', ?, '[\"price\"]', 0, ?, ?, ?)")
+      .bind(id, channel, address, token.id, verifyToken, secret, now()).run();
+  }
+  await createRules(c.env.DB, subId, token.id, parsed.rules, parsed.cooldown_s);
+  const summary = parsed.rules.map((r) => describeRule(r, token.symbol)).join("; ");
+
+  let message: string;
+  if (existing?.verified) message = `Added to your existing ${token.symbol} alerts: ${summary}.`;
+  else if (channel === "email") {
+    const r = await sendEmail(c.env, address, `Confirm your ${token.symbol} price alerts`, `Confirm price alerts for ${token.name}:\n${summary}\n\n${c.env.SITE_URL}/lifeline/alerts/confirm?t=${verifyToken}\n\nIf this was not you, ignore this email.`);
+    message = r.ok ? "Check your inbox and click the confirmation link to activate these alerts." : "Alert saved. Email delivery is not switched on yet, so the confirmation link will be sent as soon as it is.";
+  } else {
+    const r = await sendMessage(c.env, { id: subId, channel, target: address, types: "[]", secret }, { event: "test", title: `Test: price alerts enabled for ${token.symbol}`, detail: `You will hear from us when: ${summary}.`, url: `${c.env.SITE_URL}/token/${token.id}` });
+    if (r.ok) {
+      await c.env.DB.prepare("UPDATE subscriptions SET verified = 1 WHERE id = ?").bind(subId).run();
+      message = `Subscribed: ${summary}. A test message was just delivered.${secret && !existing ? ` Your webhook signing secret (shown once): ${secret}` : ""}`;
+    } else {
+      if (!existing) await c.env.DB.prepare("DELETE FROM subscriptions WHERE id = ?").bind(subId).run();
+      return fail(`The test message could not be delivered (${r.error}). Nothing was saved.`);
+    }
+  }
+  return page(c, priceAlertsMeta, <PriceAlertsPage token={token} price={m?.price_usd ?? null} channels={channels} result={{ ok: true, message }} events={events} />);
+});
+
 app.post("/lifeline/alerts", async (c) => {
   const form = await c.req.parseBody({ all: true });
   const channels = channelsConfigured(c.env);
@@ -165,20 +241,11 @@ app.post("/lifeline/alerts", async (c) => {
   if (form.website) return fail("Something went wrong. Please try again.");
   const target = await resolveTarget(c.env.DB, String(form.scope_id ?? form.scope ?? ""));
   if (!target) return fail("That is not a token symbol, ledger id, or canister id we can resolve.");
-  const channel = String(form.channel ?? "");
-  let address = String(form.target ?? "").trim();
   const types = ([] as string[]).concat((form.types as string | string[]) ?? []).filter((t) => (ALERT_TYPES as string[]).includes(t) || (EVENT_TYPES as string[]).includes(t));
   if (!types.length) return fail("Pick at least one alert type.");
-  if (channel === "email") {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(address) || address.length > 200) return fail("That email address does not look right.");
-    address = address.toLowerCase();
-  } else if (channel === "telegram") {
-    if (!/^-?\d{5,16}$/.test(address)) return fail("A Telegram chat id is a number. Message the bot with /start to get yours.");
-  } else if (channel === "discord" || channel === "webhook") {
-    const safe = safeTargetUrl(address, channel);
-    if (!safe) return fail(channel === "discord" ? "That is not a Discord webhook URL." : "Webhook URLs must be public https URLs.");
-    address = safe;
-  } else return fail("Pick a channel.");
+  const ch = parseChannel(form);
+  if ("error" in ch) return fail(ch.error);
+  const { channel, address } = ch;
   if (target.type === "canister" && !(await ensureWatched(c.env, target.id))) return fail("That canister could not be added.");
 
   const id = crypto.randomUUID().replace(/-/g, "");
@@ -839,6 +906,7 @@ const JOBS = {
   history: (env: Env) => runHistory(env),
   "holder-daily": (env: Env) => holderDailyJob(env),
   "token-meta": (env: Env) => collectTokenMeta(env),
+  "price-alerts": (env: Env) => evaluatePriceRules(env),
 } satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
 /**
@@ -933,7 +1001,7 @@ app.get("/sitemap.xml", async (c) => {
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
     ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/sns/proposals", today, 0.7], ["/sns/unlocks", today, 0.7], ["/sns/compare", null, 0.5], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
-    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
+    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
     ...canisters.results.map((x) => [`/canister/${x.id}`, day(x.measured_at), 0.5] as [string, string | null, number]), ...subnets.results.map((s) => [`/subnet/${s.id}`, today, 0.5] as [string, string, number]),
@@ -963,7 +1031,7 @@ export default {
           await runJob(env, "reserves");
           break;
         }
-        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
+        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "price-alerts"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
         case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); break;
       }

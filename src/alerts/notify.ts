@@ -16,7 +16,42 @@ export interface IncidentEvent {
   simulated?: boolean;
 }
 
-interface Subscription { id: string; channel: string; target: string; types: string; secret: string | null }
+export interface Subscription { id: string; channel: string; target: string; types: string; secret: string | null }
+
+/** A notification that is not tied to a canister incident: price rules, SNS feeds, bot digests. */
+export interface Message {
+  /** Machine event name for webhooks, e.g. "price.above". */
+  event: string;
+  title: string;
+  detail: string;
+  url: string;
+  severity?: string;
+  /** Extra webhook payload fields. */
+  payload?: Record<string, unknown>;
+}
+
+export async function sendMessage(env: Env, s: Subscription, m: Message): Promise<SendResult> {
+  const unsub = `${env.SITE_URL}/lifeline/alerts/unsubscribe?id=${s.id}`;
+  const text = [m.title, "", m.detail, "", m.url, "", `Unsubscribe: ${unsub}`].join("\n");
+  try {
+    switch (s.channel) {
+      case "telegram": return await sendTelegram(env, s.target, text);
+      case "email": return await sendEmail(env, s.target, m.title, text);
+      case "discord": {
+        const res = await fetch(s.target, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "ICPWatch", embeds: [{ title: m.title, description: m.detail, url: m.url, color: colors[m.severity ?? "info"] ?? colors.info, footer: { text: `Unsubscribe: ${unsub}` } }] }) });
+        return res.ok ? { ok: true } : { ok: false, error: `discord ${res.status}` };
+      }
+      case "webhook": {
+        const body = JSON.stringify({ event: m.event, title: m.title, detail: m.detail, url: m.url, ...(m.payload ?? {}), unsubscribe: unsub, sent_at: now() });
+        const res = await fetch(s.target, { method: "POST", headers: { "content-type": "application/json", "user-agent": "ICPWatch/1", "x-icpwatch-signature": await hmacHex(s.secret ?? "", body) }, body, redirect: "manual" });
+        return res.status >= 200 && res.status < 300 ? { ok: true } : { ok: false, error: `webhook ${res.status}` };
+      }
+      default: return { ok: false, error: `unknown channel ${s.channel}` };
+    }
+  } catch (e) {
+    return { ok: false, error: String(e).slice(0, 300) };
+  }
+}
 
 export interface SendResult { ok: boolean; error?: string }
 
