@@ -8,6 +8,8 @@ import { now } from "../lib/format";
 
 const DAYS = 90;
 const TOP = 50;
+// Quote-side assets: moving stablecoins through a pool is the other leg of a trade, not a position.
+const QUOTE = new Set(["ckUSDC", "ckUSDT", "VCHF", "VEUR", "DUSD", "USDx", "ckUSDC.icp"]);
 
 interface Tx { ledger: string; ts: number; from_account: string | null; to_account: string | null; amount: number }
 export interface Position { token_id: string; symbol: string; bought: number; bought_usd: number; sold: number; sold_usd: number; held: number; held_usd: number; pnl_usd: number; closed: boolean }
@@ -46,6 +48,7 @@ export async function collectSmartMoney(env: Env): Promise<SmartStats> {
   for (const t of txs) {
     const fromPool = isPool(t.from_account!), toPool = isPool(t.to_account!);
     if (fromPool === toPool) continue;
+    if (QUOTE.has(tokens.get(t.ledger) ?? "")) continue;
     const wallet = fromPool ? t.to_account! : t.from_account!;
     const owner = ownerOf(wallet);
     const l = labels.get(wallet) ?? labels.get(owner);
