@@ -47,6 +47,10 @@ import { ClaimPage, ProfileEditPage, VerifiedProfile } from "./pages/claims";
 import { SmartMoneyPage } from "./pages/smartmoney";
 import { exportAccount } from "./export";
 import { CalculatorPage, estimate, parseCalc } from "./pages/calculator";
+import { DecentralizationPage, FlowsPage } from "./pages/flows";
+import { NftsPage } from "./pages/nfts";
+import { collectNfts, listNfts } from "./nfts";
+import { computeDecentralization, computeFlows, type DecTable, type FlowsTable } from "./flows";
 import { fetchXdrRate } from "./lifesupport/funding";
 import { collectSmartMoney, smartFlows, smartWallets } from "./smartmoney";
 import { checkClaims, getClaim, profileByKey, saveProfile, startClaim, verifiedProfile } from "./claims";
@@ -194,6 +198,14 @@ function parseChannel(form: Record<string, unknown>): { channel: string; address
 
 const priceAlertsMeta: PageMeta = { title: "Price and volume alerts for ICP tokens", path: "/markets/alerts", section: "markets", description: "Alerts when any Internet Computer token crosses a price, moves more than a set percentage, or trades several times its usual volume. Email, Telegram, Discord, or webhook, with cooldowns." };
 
+app.get("/markets/nfts", async (c) => {
+  const [rows, icp] = await Promise.all([listNfts(c.env.DB), q.getMarket(c.env.DB, ICP_LEDGER)]);
+  return page(c, { title: "ICP NFT collections: volume, floor, listings", path: "/markets/nfts", section: "markets", description: "EXT NFT collections on the Internet Computer with lifetime volume, floor price, listings, supply, and trades read from each collection canister's own stats query.", crumbs: [["Markets", "/markets"], ["NFTs", "/markets/nfts"]] }, <NftsPage rows={rows} icpUsd={icp?.price_usd ?? null} />);
+});
+app.get("/markets/exchange-flows", async (c) => page(c, { title: "Exchange flows on the Internet Computer", path: "/markets/exchange-flows", section: "markets", description: "Large transfers into and out of exchange and custodian hubs on ICP, daily, by token, from ICPWatch's own ledger index. Inferred hubs are marked as such.", crumbs: [["Markets", "/markets"], ["Exchange flows", "/markets/exchange-flows"]] },
+  <FlowsPage t={(await q.kvGet<FlowsTable>(c.env.DB, "flows:table"))?.value ?? null} />));
+app.get("/markets/decentralization", async (c) => page(c, { title: "Token decentralization on the Internet Computer", path: "/markets/decentralization", section: "markets", description: "Holders, top-10 share, Gini, and Nakamoto coefficient for every reconciled ICP token, plus SNS voting power concentration.", crumbs: [["Markets", "/markets"], ["Decentralization", "/markets/decentralization"]] },
+  <DecentralizationPage t={(await q.kvGet<DecTable>(c.env.DB, "decentralization:table"))?.value ?? null} />));
 app.get("/markets/smart-money", async (c) => {
   const [wallets, flows] = await Promise.all([smartWallets(c.env.DB, 50), smartFlows(c.env.DB, 7)]);
   const labels = await labelsFor(c.env.DB, wallets.map((w) => w.owner));
@@ -1064,6 +1076,9 @@ const JOBS = {
   launchpad: (env: Env) => collectLaunchpad(env),
   claims: (env: Env) => checkClaims(env),
   "smart-money": (env: Env) => collectSmartMoney(env),
+  flows: (env: Env) => computeFlows(env),
+  decentralization: (env: Env) => computeDecentralization(env),
+  nfts: (env: Env) => collectNfts(env),
   "telegram-feeds": (env: Env) => telegramFeedsJob(env),
 } satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
@@ -1159,7 +1174,7 @@ app.get("/sitemap.xml", async (c) => {
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
     ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/sns/proposals", today, 0.7], ["/sns/unlocks", today, 0.7], ["/sns/compare", null, 0.5], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
-    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/markets/launchpad", today, 0.7], ["/markets/smart-money", today, 0.7], ["/snapshots", today, 0.5], ["/telegram", null, 0.6], ["/lifeline/calculator", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
+    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/markets/launchpad", today, 0.7], ["/markets/smart-money", today, 0.7], ["/markets/exchange-flows", today, 0.6], ["/markets/decentralization", today, 0.7], ["/markets/nfts", today, 0.6], ["/snapshots", today, 0.5], ["/telegram", null, 0.6], ["/lifeline/calculator", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
     ...canisters.results.map((x) => [`/canister/${x.id}`, day(x.measured_at), 0.5] as [string, string | null, number]), ...subnets.results.map((s) => [`/subnet/${s.id}`, today, 0.5] as [string, string, number]),
@@ -1191,7 +1206,7 @@ export default {
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "price-alerts"); await runJob(env, "rug-signals"); await runJob(env, "telegram-feeds"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
         case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "launchpad"); await runJob(env, "claims"); await runJob(env, "life-support"); break;
-        case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); await runJob(env, "smart-money"); break;
+        case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); await runJob(env, "smart-money"); await runJob(env, "flows"); await runJob(env, "decentralization"); await runJob(env, "nfts"); break;
       }
     };
     ctx.waitUntil(run());
