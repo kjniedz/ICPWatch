@@ -130,7 +130,7 @@ function Header({ section }: { section: Section }) {
 
 const footerCols: [string, [string, string][]][] = [
   ["Product", [["Markets", "/markets"], ["Network", "/network"], ["Lifeline", "/lifeline"], ["Price alerts", "/lifeline/alerts"], ["API", "/api"]]],
-  ["Explore", [["ck reserves", "/reserves"], ["Whale alerts", "/markets/whales"], ["New listings", "/markets/new"], ["Entity labels", "/labels"], ["On Life Support", "/lifeline/life-support"], ["Subnets", "/network/subnets"], ["Proposals", "/network/proposals"]]],
+  ["Explore", [["SNS DAOs", "/sns"], ["ck reserves", "/reserves"], ["Whale alerts", "/markets/whales"], ["New listings", "/markets/new"], ["Entity labels", "/labels"], ["On Life Support", "/lifeline/life-support"], ["Subnets", "/network/subnets"], ["Proposals", "/network/proposals"]]],
   ["Resources", [["Documentation", "/docs"], ["Changelog", "/changelog"], ["Listing request", "/listing-request"], ["Status", "/status"]]],
   ["About", [["FAQ", "/faq"], ["How it works", "/how-it-works"], ["Data sources", "/data-sources"], ["Contact", "/contact"]]],
 ];

@@ -34,6 +34,8 @@ import { AlertsPage, IncidentsPage, type AlertTarget } from "./pages/alerts";
 import { ApiDocs, Changelog, Disclaimer, Docs, Faq, FormPage, HowItWorks, NotFound, Privacy, StatusPage, Terms } from "./pages/content";
 import { CanisterPage, TokenPage } from "./pages/detail";
 import type { SnsSectionData } from "./pages/sns";
+import { SnsDashboardPage } from "./pages/snsdash";
+import { listSnsDaos, toView, totals as snsTotals } from "./sns/queries";
 import { HomePage } from "./pages/home";
 import { LifelineLive, LifelinePage } from "./pages/lifeline";
 import { MarketsPage, type MarketTotals } from "./pages/markets";
@@ -279,6 +281,18 @@ app.get("/token/:id", async (c) => {
 });
 
 // ---- markets ---------------------------------------------------------------------------------------------
+
+app.get("/sns", async (c) => {
+  const ts = now();
+  const rows = await listSnsDaos(c.env.DB, ts);
+  const views = rows.map((r) => toView(r, ts));
+  const fetchedAt = rows.reduce<number | null>((m, r) => (r.sns_fetched_at != null && (m == null || r.sns_fetched_at > m) ? r.sns_fetched_at : m), null);
+  return page(c, {
+    title: "SNS DAOs: treasuries, governance, and health of every Internet Computer DAO", path: "/sns", section: "markets",
+    description: "Every SNS DAO on the Internet Computer with price, market cap, treasury in ICP and tokens, treasury as a share of market cap, swap ROI, neurons, voting power, 30-day turnout, proposals, trust score, and canister health. Dead DAOs included and marked.",
+    crumbs: [["Markets", "/markets"], ["SNS DAOs", "/sns"]],
+  }, <SnsDashboardPage views={views} totals={snsTotals(views)} fetchedAt={fetchedAt} />);
+});
 
 app.get("/markets", async (c) => {
   const [rows, pools, totals] = await Promise.all([q.listTokens(c.env.DB), q.topPools(c.env.DB, 5), q.kvGet<MarketTotals>(c.env.DB, "markets:totals")]);
@@ -803,7 +817,7 @@ app.get("/sitemap.xml", async (c) => {
   const today = day(now());
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
-    ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
+    ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
     ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),

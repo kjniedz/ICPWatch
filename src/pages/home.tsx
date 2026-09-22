@@ -34,7 +34,7 @@ export function HomePage({ s }: { s: HomeStats }) {
               <li>Trust score on every token, method published</li>
               <li>Holders from our own ledger index, treasuries and pools named</li>
               <li>Chain Fusion reserves: is ckBTC backed, live</li>
-              <li>SNS treasuries, proposals, and unlocks</li>
+              <li>Every SNS DAO: treasuries, proposals, unlocks</li>
               <li>Every number shows its source and freshness</li>
             </ul>
             <div class="foot">
