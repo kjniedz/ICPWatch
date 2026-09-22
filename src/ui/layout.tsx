@@ -16,6 +16,8 @@ export interface PageMeta {
   noindex?: boolean;
   /** Load the chart island on this page */
   chart?: boolean;
+  /** Load the fund-this-canister island */
+  fund?: boolean;
 }
 
 const SITE = "https://icpwatch.com";
@@ -57,6 +59,7 @@ export function Layout({ meta, children }: { meta: PageMeta; children?: Child })
         {meta.jsonLd ? <script type="application/ld+json">{raw(JSON.stringify(meta.jsonLd).replace(/</g, "\\u003c"))}</script> : null}
         <script type="module" src={assets["app.js"]}></script>
         {meta.chart ? <script type="module" src={assets["chart.js"]}></script> : null}
+        {meta.fund ? <script type="module" src={assets["fund.js"]}></script> : null}
       </head>
       <body>
         <Header section={meta.section} />

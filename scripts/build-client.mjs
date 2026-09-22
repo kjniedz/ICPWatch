@@ -12,7 +12,7 @@ for (const f of readdirSync(outdir)) {
   if (/\.(js|css|map)$/.test(f)) rmSync(`${outdir}/${f}`);
 }
 
-const entries = { app: "client/app.ts", chart: "client/chart.ts", styles: "client/styles.css" };
+const entries = { app: "client/app.ts", chart: "client/chart.ts", fund: "client/fund.ts", styles: "client/styles.css" };
 
 const options = {
   entryPoints: entries,

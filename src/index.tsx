@@ -17,6 +17,8 @@ import { TrustMethodologyPage, type StoredTrust } from "./pages/trust";
 import { collectTrust } from "./trust/collect";
 import { collectReserves } from "./reserves/collect";
 import { ReserveAssetPage, ReservesPage, type LatestRow } from "./pages/reserves";
+import { claimBlock, depositsFor, fundingFor, registerIntent, setSupporterName, watchDeposits } from "./fund";
+import { SupportersList } from "./pages/fund";
 import { isTreasuryOrPool } from "./labels";
 import { holderStats, indexFailures, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
@@ -226,10 +228,12 @@ app.get("/canister/:id", async (c) => {
   let ctrl: string[] = [];
   try { ctrl = JSON.parse(can.controllers ?? "[]") as string[]; } catch { /* none */ }
   const ctrlLabels = await labelsFor(db, ctrl);
+  // Fund panel on every watched canister that can take a top-up (anything that still exists).
+  const fund = can.run_status === "deleted" ? null : await fundingFor(c.env, id).catch(() => null);
   return page(c, {
-    title: `${can.label} canister health`, path: `/canister/${id}`, section: "lifeline", chart: true,
+    title: `${can.label} canister health`, path: `/canister/${id}`, section: "lifeline", chart: true, fund: !!fund,
     description: `Cycle balance, burn rate, freeze runway, controllers, and upgrade history for ${can.label} (${id}) on the Internet Computer.`,
-  }, <CanisterPage c={can} changes={changes} history={history} incidents={incidents} labels={ctrlLabels} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
+  }, <CanisterPage c={can} changes={changes} history={history} incidents={incidents} labels={ctrlLabels} fund={fund} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
 });
 
 /** Holders come from our own block index once a ledger is fully replayed; until then from the labeled third-party fallback. */
@@ -595,6 +599,27 @@ api.get("/token/:id/prices", async (c) => {
   return c.json({ unit: "usd", source: "DEX candles", points: rows.map((r) => ({ t: r.ts, o: r.open ?? r.price_usd, h: r.high ?? r.price_usd, l: r.low ?? r.price_usd, c: r.price_usd })) });
 });
 api.get("/pools", async (c) => c.json({ pools: await q.topPools(c.env.DB, 300) }));
+// Community top-ups: intent registration, live status, block claims, supporter names.
+api.post("/fund/:id/intent", async (c) => {
+  const id = c.req.param("id");
+  if (!isCanisterId(id) || !(await q.getCanister(c.env.DB, id))) return c.json({ error: "unknown canister" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { mode?: string; cycles?: number | null; e8s?: number | null; from?: string | null };
+  const mode = body.mode === "revive" ? "revive" : "keep_alive";
+  return c.json({ id: await registerIntent(c.env, id, mode, body.cycles ?? null, body.e8s ?? null, body.from && /^[0-9a-f]{64}$/i.test(body.from) ? body.from.toLowerCase() : null) }, 200, { "cache-control": "no-store" });
+});
+api.get("/fund/:id/status", async (c) => c.json({ deposits: await depositsFor(c.env.DB, c.req.param("id"), 5) }, 200, { "cache-control": "no-store" }));
+api.post("/fund/:id/claim", async (c) => {
+  const id = c.req.param("id");
+  if (!isCanisterId(id)) return c.json({ error: "unknown canister" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { block?: number; intent?: string | null };
+  if (!Number.isInteger(body.block) || body.block! < 0) return c.json({ error: "block index required" }, 400);
+  return c.json(await claimBlock(c.env, id, body.block!, body.intent ?? null), 200, { "cache-control": "no-store" });
+});
+api.post("/fund/:id/name", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { block?: number; from?: string; name?: string; link?: string | null };
+  if (!Number.isInteger(body.block) || !body.from || !body.name) return c.json({ error: "block, from, and name required" }, 400);
+  return c.json({ ok: await setSupporterName(c.env, body.block!, body.from.toLowerCase(), body.name, body.link ?? null) });
+});
 api.get("/reserves", async (c) => c.json({ assets: (await c.env.DB.prepare("SELECT asset, symbol, chain, ts, status, raw_ratio, reconciled_ratio, supply_raw, reserves_raw, native_raw, pending_in_raw, pending_out_raw, verified FROM reserves_latest").all()).results, source: "minter canisters + native chain sources" }));
 api.get("/reserves/:asset/series", async (c) => {
   const key = c.req.query("range") ?? "7d";
@@ -672,6 +697,7 @@ const JOBS = {
   labels: (env: Env) => collectLabels(env),
   trust: (env: Env) => collectTrust(env, { labels: { labelsFor, isTreasuryOrPool } }),
   reserves: (env: Env) => collectReserves(env),
+  "fund-watch": (env: Env) => watchDeposits(env),
   indexer: (env: Env) => indexJob(env),
   // One ledger only, used by the admin route below and local testing. Default 45 s budget.
   "indexer-one": (env: Env, ledger?: string) => indexTick(env, { budgetMs: 45_000, ledgers: ledger ? [ledger] : [], maxReconciles: 1 }).then(({ ledgers, ...s }) => ({ ...s, failed: ledgers.filter((l) => l.error).map((l) => ({ ledger: l.ledger, error: l.error })) })),
@@ -792,7 +818,7 @@ export default {
           await runJob(env, "reserves");
           break;
         }
-        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "indexer"); break;
+        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
         case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); break;
       }

@@ -1,6 +1,7 @@
 import type { CanisterRow, IncidentRow, LifelineSummary, TokenHealthRow } from "../db/queries";
 import { ago, fmtCycles, fmtNum, isoDate, now, span } from "../lib/format";
 import { Conf, Empty, Fresh, HealthPill, TokenLogo } from "../ui/components";
+import { FundLink } from "./fund";
 
 export const roleLabel: Record<string, string> = {
   ledger: "Ledger", index: "Index", archive: "Archive", root: "SNS root", governance: "Governance", swap: "Swap",
@@ -80,7 +81,7 @@ export function CanisterTable({ rows, id = "canisters", showToken = true }: { ro
                 {c.burn_per_day != null ? fmtCycles(c.burn_per_day) : <span class="muted">n/a</span>}
               </td>
               <td class="nowrap" data-v={runwaySort(c, nowTs)}>{runwayCell(c, nowTs)}</td>
-              <td data-v={c.health}><HealthPill health={c.health} label={healthLabelFor(c)} /></td>
+              <td data-v={c.health}><HealthPill health={c.health} label={healthLabelFor(c)} />{c.health === "frozen" || c.health === "low" ? <> <FundLink canisterId={c.id} /></> : null}</td>
               <td data-v={c.confidence}>
                 <Conf confidence={c.confidence} source={c.cycles_source} />
                 {c.measured_at ? <time class="src" style="display:block" datetime={isoDate(c.measured_at)} data-ago={c.measured_at}>{ago(c.measured_at)}</time> : null}

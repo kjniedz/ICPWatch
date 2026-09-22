@@ -9,6 +9,7 @@ import { SnsDaoSection, type SnsSectionData } from "./sns";
 import type { EntityLabel } from "../labels";
 import { EntityName } from "./labels";
 import { TrustPanel, type StoredTrust } from "./trust";
+import { FundPanel, type FundData } from "./fund";
 
 const parse = <T,>(s: string | null | undefined, fallback: T): T => {
   if (!s) return fallback;
@@ -158,8 +159,8 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, tru
   );
 }
 
-export function CanisterPage({ c, changes, history, incidents, siblings, labels }: {
-  c: CanisterRow; history: CanisterHistory | null; labels?: Map<string, EntityLabel>; changes: { ts: number; field: string; old_value: string | null; new_value: string | null }[]; incidents: IncidentRow[]; siblings: CanisterRow[];
+export function CanisterPage({ c, changes, history, incidents, siblings, labels, fund }: {
+  c: CanisterRow; history: CanisterHistory | null; labels?: Map<string, EntityLabel>; fund?: FundData | null; changes: { ts: number; field: string; old_value: string | null; new_value: string | null }[]; incidents: IncidentRow[]; siblings: CanisterRow[];
 }) {
   const controllers = parse<string[]>(c.controllers, []);
   const nowTs = now();
@@ -198,6 +199,8 @@ export function CanisterPage({ c, changes, history, incidents, siblings, labels 
         <Fresh ts={c.measured_at ?? c.probed_at} source={sourceName(c.cycles_source ?? (c.probed_at ? "probe" : null))} staleAfter={1500} label={c.measured_at ? "measured" : "probed"} />
         <span class="src">Role: <b>{roleLabel[c.role] ?? c.role}</b> &middot; discovered via {c.discovered_via} on {shortDate(c.discovered_at)}</span>
       </div>
+
+      {fund ? (<><div class="sec-head" id="fund-head"><h2>Community funding</h2></div><FundPanel canisterId={c.id} label={c.label} data={fund} /></>) : null}
 
       <div class="sec-head"><h2>Cycle balance over time</h2></div>
       <div class="card">
