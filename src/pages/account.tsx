@@ -3,6 +3,7 @@ import type { AccountTx, AccountView, TxPage } from "../collectors/accounts";
 import { shortAccount } from "../lib/account";
 import { fmtNum, fmtUsd, isoDate, ago } from "../lib/format";
 import { CopyId, Crumbs, Empty, Fresh, TokenLogo } from "../ui/components";
+import { EntityName } from "./labels";
 
 /** Token amounts without padded zeros: 0.2498, 16,004, 1.4998. */
 const amountText = (n: number | null) => (n == null ? "n/a" : n.toLocaleString("en-US", { maximumFractionDigits: Math.abs(n) < 1 ? 8 : Math.abs(n) < 1000 ? 4 : 2 }));
@@ -57,7 +58,7 @@ export function AccountPage({ a }: { a: AccountView }) {
       <Crumbs items={[["Network", "/network"], ["Account", null]]} />
       <div class="detail-head">
         <div style="min-width:0">
-          <h1>{title} {a.is_canister ? <span class="chip">canister</span> : null}</h1>
+          <h1>{a.label ? <EntityName id={a.principal ?? a.account_id} label={a.label} short /> : title} {a.is_canister ? <span class="chip">canister</span> : null}</h1>
           {a.principal ? (
             <div class="mono muted" style="font-size:12.5px;margin-top:4px;word-break:break-all">{a.icrc_account ?? a.principal} <CopyId id={a.icrc_account ?? a.principal} /></div>
           ) : null}

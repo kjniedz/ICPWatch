@@ -5,6 +5,8 @@ import { Conf, CopyId, Crumbs, Empty, Fresh, HealthPill, TokenLogo } from "../ui
 import { PoolsTable, TokenTable } from "./markets";
 import type { CanisterHistory } from "../collectors/history";
 import { HistoryTimeline } from "./history";
+import type { EntityLabel } from "../labels";
+import { EntityName } from "./labels";
 
 export function PoolsPage({ pools, fetchedAt }: { pools: PoolRow[]; fetchedAt: number | null }) {
   return (
@@ -48,7 +50,7 @@ export function NewListingsPage({ tokens, since }: { tokens: TokenRow[]; since: 
 
 const shortAcct = (a: string) => (a.length > 30 ? `${a.slice(0, 14)}...${a.slice(-6)}` : a);
 
-export function WhalesPage({ feed }: { feed: Kv<WhaleTransfer[]> | null }) {
+export function WhalesPage({ feed, labels }: { feed: Kv<WhaleTransfer[]> | null; labels?: Map<string, EntityLabel> }) {
   const rows = feed?.value ?? [];
   return (
     <div class="wrap page">
@@ -66,8 +68,8 @@ export function WhalesPage({ feed }: { feed: Kv<WhaleTransfer[]> | null }) {
                 <td data-v={w.symbol}><a href={`/token/${w.token_id}`} style="font-weight:600">{w.symbol}</a> <span class="muted" style="font-size:11px">#{w.index}</span></td>
                 <td class="r num" data-v={w.amount}>{fmtCompact(w.amount)}</td>
                 <td class="r num strong" data-v={w.usd}>{fmtCompact(w.usd, "$")}</td>
-                <td class="mono" style="font-size:11.5px"><a href={`/search?q=${encodeURIComponent(w.from)}`}>{shortAcct(w.from)}</a></td>
-                <td class="mono" style="font-size:11.5px"><a href={`/search?q=${encodeURIComponent(w.to)}`}>{shortAcct(w.to)}</a></td>
+                <td><EntityName id={w.from} label={labels?.get(w.from)} short /></td>
+                <td><EntityName id={w.to} label={labels?.get(w.to)} short /></td>
                 <td data-v={w.ts}><time datetime={isoDate(w.ts)} data-ago={w.ts}>{ago(w.ts)}</time></td>
               </tr>
             ))}

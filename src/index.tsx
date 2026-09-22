@@ -11,6 +11,8 @@ import { collectNetwork } from "./collectors/network";
 import { collectSns } from "./collectors/sns";
 import * as q from "./db/queries";
 import { indexJob, indexTick, reconcile } from "./indexer";
+import { collectLabels, labelsFor, listLabels, listSubmissions, reviewSubmission, searchLabels, submitLabel, type EntityLabel } from "./labels";
+import { LabelSubmitPage, LabelsPage, SubmissionsAdmin } from "./pages/labels";
 import { holderStats, indexFailures, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
 import { now } from "./lib/format";
@@ -216,10 +218,13 @@ app.get("/canister/:id", async (c) => {
     return page(c, { title: `Canister ${id}`, path: `/canister/${id}`, section: "lifeline", description: `Live lookup of canister ${id}: controllers, module hash, subnet, and liveness.`, noindex: true }, <UnwatchedCanisterPage id={id} state={state} probe={pr} history={liveHistory} />);
   }
   const [changes, incidents, siblings, history] = await Promise.all([q.canisterChanges(db, id), q.recentIncidents(db, 10, [id]), can.token_id ? q.canistersForToken(db, can.token_id) : Promise.resolve([]), historyFor(db, id).catch(() => null)]);
+  let ctrl: string[] = [];
+  try { ctrl = JSON.parse(can.controllers ?? "[]") as string[]; } catch { /* none */ }
+  const ctrlLabels = await labelsFor(db, ctrl);
   return page(c, {
     title: `${can.label} canister health`, path: `/canister/${id}`, section: "lifeline", chart: true,
     description: `Cycle balance, burn rate, freeze runway, controllers, and upgrade history for ${can.label} (${id}) on the Internet Computer.`,
-  }, <CanisterPage c={can} changes={changes} history={history} incidents={incidents} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
+  }, <CanisterPage c={can} changes={changes} history={history} incidents={incidents} labels={ctrlLabels} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
 });
 
 /** Holders come from our own block index once a ledger is fully replayed; until then from the labeled third-party fallback. */
@@ -228,14 +233,19 @@ async function holdersFor(env: Env, t: q.TokenRow) {
   // Our index is only shown once it is complete AND has reconciled against total supply in production.
   if (prog?.trusted) {
     const [top, stats] = await Promise.all([topHolders(env.DB, t.id, { limit: 25, totalSupplyRaw: t.total_supply }), holderStats(env.DB, t.id, t.total_supply)]);
+    const labels = await labelsFor(env.DB, top.holders.map((h) => h.account));
     return {
-      rows: top.holders.map((h) => ({ account: h.account, balance: h.balance, share: h.share })), total: stats.holders, top10: stats.top10Share,
+      rows: top.holders.map((h) => ({ account: h.account, balance: h.balance, share: h.share, label: labels.get(h.account) ?? null })), total: stats.holders, top10: stats.top10Share,
       fetched_at: prog.asOfTs ?? prog.updatedAt, source: "ICPWatch block index, replayed from the ledger and its archives", indexing: null,
     };
   }
   const fallback = t.id === ICP_LEDGER ? null : await holdersCached(env, t.id, t.decimals).catch(() => null);
   const indexing = prog ? { percent: prog.percent, status: prog.status } : null;
-  return fallback ? { ...fallback, total: null, indexing } : indexing ? { rows: [], total: null, fetched_at: prog!.updatedAt, source: "ICPWatch block index", indexing } : null;
+  if (fallback) {
+    const labels = await labelsFor(env.DB, fallback.rows.map((h) => h.account));
+    return { ...fallback, rows: fallback.rows.map((h) => ({ ...h, label: labels.get(h.account) ?? null })), total: null, indexing };
+  }
+  return indexing ? { rows: [], total: null, fetched_at: prog!.updatedAt, source: "ICPWatch block index", indexing } : null;
 }
 
 app.get("/token/:id", async (c) => {
@@ -288,8 +298,9 @@ app.get("/markets/whales", async (c) => {
     ownCount++;
   }
   const value = [...merged.values()].sort((a, b) => b.usd - a.usd).slice(0, 80);
+  const whaleLabels = await labelsFor(db, value.flatMap((w) => [w.from, w.to]));
   const source = ownCount ? `ICPWatch block index (${ownCount} of ${value.length})${value.length > ownCount ? " + ICRC ledger API (third party) for ledgers still syncing" : ""}` : (third?.source ?? "ledger API");
-  return page(c, { title: "Whale alerts", path: "/markets/whales", section: "markets", description: "The largest token transfers on the Internet Computer in the last 24 hours." }, <WhalesPage feed={{ value, source, fetched_at: third?.fetched_at ?? now() }} />);
+  return page(c, { title: "Whale alerts", path: "/markets/whales", section: "markets", description: "The largest token transfers on the Internet Computer in the last 24 hours." }, <WhalesPage feed={{ value, source, fetched_at: third?.fetched_at ?? now() }} labels={whaleLabels} />);
 });
 app.get("/markets/screener", async (c) => {
   const p = { kind: c.req.query("kind") ?? "", health: c.req.query("health") ?? "", minMcap: c.req.query("minMcap") ?? "", minVol: c.req.query("minVol") ?? "", minLiq: c.req.query("minLiq") ?? "", chg: c.req.query("chg") ?? "" };
@@ -355,6 +366,34 @@ app.get("/proposal/:id", async (c) => {
   return page(c, { title: `Proposal ${p.id}: ${p.title ?? ""}`.slice(0, 110), path: `/proposal/${p.id}`, section: "network", description: `NNS proposal ${p.id}: ${p.title ?? ""}. Topic, voting progress, outcome, and the full summary.`.slice(0, 250) }, <ProposalPage p={p} summaryHtml={renderMarkdown(p.summary ?? "")} />);
 });
 
+// ---- labels ---------------------------------------------------------------------------------------------
+
+app.get("/labels", async (c) => {
+  const qs = c.req.query("q") ?? "";
+  const category = c.req.query("category") ?? "";
+  const confidence = c.req.query("confidence") ?? "";
+  const dir = await listLabels(c.env.DB, { q: qs, category: category || undefined, confidence: confidence || undefined, limit: 400 });
+  return page(c, { title: "Entity labels", path: "/labels", section: "network", description: "Who is behind Internet Computer principals and accounts: SNS treasuries, minters, DEX pools, known neurons, system canisters, each with its evidence and confidence." }, <LabelsPage dir={dir} q={qs} category={category} confidence={confidence} />);
+});
+const submitMeta: PageMeta = { title: "Suggest a label", path: "/labels/submit", section: "network", description: "Suggest an entity label for an Internet Computer account, with public evidence, for review." };
+app.get("/labels/submit", (c) => page(c, submitMeta, <LabelSubmitPage target={c.req.query("id") ?? ""} />));
+app.post("/labels/submit", async (c) => {
+  const form = await c.req.parseBody();
+  const r = await submitLabel(c.env, form as Record<string, unknown>);
+  return page(c, submitMeta, <LabelSubmitPage target={r.ok ? "" : String(form.target ?? "")} result={r} />);
+});
+app.get("/admin/labels/submissions", async (c) => {
+  if (!authed(c) && c.req.query("token") !== c.env.ADMIN_TOKEN) return c.json({ error: "unauthorized" }, 401);
+  return page(c, { title: "Label review", path: "/admin/labels/submissions", section: "none", description: "", noindex: true }, <SubmissionsAdmin items={await listSubmissions(c.env.DB, c.req.query("status") ?? "pending")} />);
+});
+app.post("/admin/labels/review", async (c) => {
+  const form = await c.req.parseBody();
+  const token = c.req.header("authorization")?.replace(/^Bearer /, "") ?? String(form.token ?? "") ?? c.req.query("token");
+  if (!c.env.ADMIN_TOKEN || (token !== c.env.ADMIN_TOKEN && c.req.query("token") !== c.env.ADMIN_TOKEN)) return c.json({ error: "unauthorized" }, 401);
+  const r = await reviewSubmission(c.env, Number(form.id), String(form.decision) === "approve", form.note ? String(form.note) : undefined);
+  return c.req.header("accept")?.includes("text/html") ? c.redirect(`/admin/labels/submissions?token=${c.env.ADMIN_TOKEN}`, 303) : c.json(r);
+});
+
 // ---- accounts -------------------------------------------------------------------------------------------
 
 app.get("/account/:id", async (c) => {
@@ -391,8 +430,9 @@ async function search(env: Env, raw: string): Promise<{ hits: SearchHit[]; exact
   if (s.length < 2) return { hits: [], exact: null, note: null };
   const num = /^#?(\d{1,12})$/.exec(s.replace(/^proposal\s+/i, ""));
   const term = s.replace(/^(subnet|canister|token|proposal)\s+/i, "");
-  const idx = await q.searchIndex(env.DB, num ? num[1]! : term);
+  const [idx, labelHits] = await Promise.all([q.searchIndex(env.DB, num ? num[1]! : term), searchLabels(env.DB, term, 6).catch(() => [] as EntityLabel[])]);
   const hits: SearchHit[] = [];
+  for (const l of labelHits) hits.push({ type: l.category === "known_neuron" ? "Neuron" : "Label", title: `${l.name} (${l.confidence})`, sub: l.id, href: l.id.startsWith("neuron:") ? `https://dashboard.internetcomputer.org/neuron/${l.id.slice(7)}` : isCanisterId(l.id) ? `/canister/${l.id}` : `/account/${encodeURIComponent(l.id)}` });
   for (const t of idx.tokens) hits.push({ type: "Token", title: `${t.name} (${t.symbol})`, sub: String(t.id), href: `/token/${t.id}` });
   for (const x of idx.canisters) hits.push({ type: "Canister", title: String(x.label), sub: String(x.id), href: `/canister/${x.id}` });
   for (const x of idx.subnets) hits.push({ type: "Subnet", title: `${x.label ?? "Subnet"} ${String(x.id).slice(0, 11)}`, sub: String(x.id), href: `/subnet/${x.id}` });
@@ -587,6 +627,7 @@ const JOBS = {
   whales: (env: Env) => collectWhales(env),
   rollup: (env: Env) => rollupLifeline(env),
   sns: (env: Env) => collectSns(env),
+  labels: (env: Env) => collectLabels(env),
   indexer: (env: Env) => indexJob(env),
   // One ledger only, used by the admin route below and local testing. Default 45 s budget.
   "indexer-one": (env: Env, ledger?: string) => indexTick(env, { budgetMs: 45_000, ledgers: ledger ? [ledger] : [], maxReconciles: 1 }).then(({ ledgers, ...s }) => ({ ...s, failed: ledgers.filter((l) => l.error).map((l) => ({ ledger: l.ledger, error: l.error })) })),
@@ -707,7 +748,7 @@ export default {
           break;
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "indexer"); break;
-        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "life-support"); break;
+        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); break;
       }
     };

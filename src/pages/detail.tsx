@@ -6,6 +6,8 @@ import { PoolsTable, tokenHealthLabel } from "./markets";
 import type { CanisterHistory } from "../collectors/history";
 import { HistoryTimeline } from "./history";
 import { SnsDaoSection, type SnsSectionData } from "./sns";
+import type { EntityLabel } from "../labels";
+import { EntityName } from "./labels";
 
 const parse = <T,>(s: string | null | undefined, fallback: T): T => {
   if (!s) return fallback;
@@ -30,7 +32,7 @@ export interface SnsInfo {
 export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
   t: TokenRow; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsSectionData | null;
   holders: {
-    rows: { account: string; balance: number; share: number | null }[]; total: number | null; top10?: number | null; fetched_at: number; source: string;
+    rows: { account: string; balance: number; share: number | null; label?: EntityLabel | null }[]; total: number | null; top10?: number | null; fetched_at: number; source: string;
     /** Set while our own index is still replaying this ledger: the list then comes from the third-party fallback. */
     indexing?: { percent: number; status: string } | null;
   } | null;
@@ -137,7 +139,7 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
               {holders.rows.map((h, i) => (
                 <tr>
                   <td class="muted">{i + 1}</td>
-                  <td class="mono" style="font-size:12px"><a href={`/search?q=${encodeURIComponent(h.account)}`}>{h.account.length > 40 ? `${h.account.slice(0, 22)}...${h.account.slice(-8)}` : h.account}</a></td>
+                  <td><EntityName id={h.account} label={h.label} /></td>
                   <td class="r num">{fmtCompact(h.balance)}</td>
                   <td class="r num">{h.share != null ? `${(h.share * 100).toFixed(2)}%` : "n/a"}</td>
                 </tr>
@@ -152,8 +154,8 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
   );
 }
 
-export function CanisterPage({ c, changes, history, incidents, siblings }: {
-  c: CanisterRow; history: CanisterHistory | null; changes: { ts: number; field: string; old_value: string | null; new_value: string | null }[]; incidents: IncidentRow[]; siblings: CanisterRow[];
+export function CanisterPage({ c, changes, history, incidents, siblings, labels }: {
+  c: CanisterRow; history: CanisterHistory | null; labels?: Map<string, EntityLabel>; changes: { ts: number; field: string; old_value: string | null; new_value: string | null }[]; incidents: IncidentRow[]; siblings: CanisterRow[];
 }) {
   const controllers = parse<string[]>(c.controllers, []);
   const nowTs = now();
@@ -204,7 +206,7 @@ export function CanisterPage({ c, changes, history, incidents, siblings }: {
           <div class="sec-head"><h2>Controllers</h2></div>
           <div class="card card-pad">
             {controllers.length ? controllers.map((p) => (
-              <div class="mono" style="font-size:12px;padding:4px 0"><a href={`/search?q=${p}`}>{p}</a></div>
+              <div style="padding:4px 0"><EntityName id={p} label={labels?.get(p)} /></div>
             )) : <span class="muted">{c.controllers ? "No controllers: this canister is immutable (blackholed)." : "Not read yet."}</span>}
             <div class="src" style="margin-top:8px">read_state, certified by the subnet</div>
           </div>

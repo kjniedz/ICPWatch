@@ -6,6 +6,7 @@
 // An account identifier is a one-way hash of (principal, subaccount), so a bare identifier can only
 // show its ICP side. Neurons are private on the IC and are never shown.
 import { accountHoldings } from "../indexer/queries";
+import { labelsFor, type EntityLabel } from "../labels";
 import { Actor } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
@@ -101,6 +102,8 @@ export interface AccountView {
   icrc_account: string | null;
   /** Set when the principal (or, for a bare identifier, the matching default account) is a canister in the registry. */
   canister: { id: string; label: string; token_id: string | null } | null;
+  /** Entity label for this account or its principal, when one exists. */
+  label: EntityLabel | null;
   is_canister: boolean;
   icp: { balance: number | null; price_usd: number | null; usd: number | null; source: string; fetched_at: number; error: string | null };
   /** Null when the principal is unknown (bare account identifier), so token ledgers cannot be asked. */
@@ -341,8 +344,16 @@ export async function loadAccount(env: Env, id: string, opts: LoadAccountOpts = 
       : Promise.resolve(null),
   ]);
 
+  // Names for counterparties: the entity label store first (SNS treasuries, minters, exchanges...),
+  // then the registry's canister labels via their default ICP account.
+  const cps = new Set<string>();
+  for (const t of txs.v?.txs ?? []) if (t.counterparty) cps.add(t.counterparty);
+  for (const t of tokenTxs?.v?.txs ?? []) if (t.counterparty) cps.add(t.counterparty);
+  const ents = await labelsFor(env.DB, [...cps, accountId, ...(principal ? [principal] : [])]).catch(() => new Map<string, EntityLabel>());
   const label = (tx: AccountTx): AccountTx => {
     if (!tx.counterparty) return tx;
+    const ent = ents.get(tx.counterparty);
+    if (ent) return { ...tx, counterparty_label: ent.name };
     const hit = known.get(tx.counterparty) ?? canisterRows.find((c) => c.id === tx.counterparty);
     return hit ? { ...tx, counterparty_label: hit.label } : tx;
   };
@@ -376,7 +387,7 @@ export async function loadAccount(env: Env, id: string, opts: LoadAccountOpts = 
   return {
     input: id.trim(), kind: input.kind, account_id: accountId, principal, subaccount: subHex,
     icrc_account: principal ? encodeIcrcAccount(principal, subaccount) : null,
-    canister, is_canister: principal ? isCanisterId(principal) : !!canister,
+    canister, label: (principal ? ents.get(principal) : null) ?? ents.get(accountId) ?? null, is_canister: principal ? isCanisterId(principal) : !!canister,
     icp: { balance: icpBal, price_usd: price, usd: icpUsd, source: bal.v != null ? "ICP ledger account_balance" : "ICP index canister", fetched_at: ts, error: bal.v == null && icpBal == null ? bal.error : null },
     holdings, holdings_checked: tokenRows.length - unchecked, holdings_unchecked: unchecked,
     live_url: opts.skipLive && principal ? `/account/${encodeURIComponent(id.trim())}/holdings` : null,
