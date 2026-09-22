@@ -13,6 +13,9 @@ import * as q from "./db/queries";
 import { indexJob, indexTick, reconcile } from "./indexer";
 import { collectLabels, labelsFor, listLabels, listSubmissions, reviewSubmission, searchLabels, submitLabel, type EntityLabel } from "./labels";
 import { LabelSubmitPage, LabelsPage, SubmissionsAdmin } from "./pages/labels";
+import { TrustMethodologyPage, type StoredTrust } from "./pages/trust";
+import { collectTrust } from "./trust/collect";
+import { isTreasuryOrPool } from "./labels";
 import { holderStats, indexFailures, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
 import { now } from "./lib/format";
@@ -253,15 +256,15 @@ app.get("/token/:id", async (c) => {
   const t = await q.getToken(db, c.req.param("id"));
   if (!t) return page(c, { title: "Token not found", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That token is not in the registry. You can request a listing." />, 404);
   if (t.id !== c.req.param("id")) return c.redirect(`/token/${t.id}`, 301);
-  const [m, canisters, pools, holders, sns] = await Promise.all([
+  const [m, canisters, pools, holders, sns, trust] = await Promise.all([
     q.getMarket(db, t.id), q.canistersForToken(db, t.id), q.poolsForToken(db, t.id), holdersFor(c.env, t),
-    q.kvGet<SnsSectionData>(db, `sns:${t.id}`),
+    q.kvGet<SnsSectionData>(db, `sns:${t.id}`), db.prepare("SELECT * FROM trust_scores WHERE token_id = ?").bind(t.id).first<StoredTrust>(),
   ]);
   const incidents = await q.recentIncidents(db, 8, canisters.map((x) => x.id));
   return page(c, {
     title: `${t.name} (${t.symbol}) price, liquidity, and canister health`, path: `/token/${t.id}`, section: "markets", chart: true,
     description: `${t.symbol} price aggregated across ICP DEXs, where its liquidity sits, top holders, and the cycle health of its ledger, index, and archive canisters.`,
-  }, <TokenPage t={t} m={m} canisters={canisters} pools={pools} incidents={incidents} sns={sns ? { ...sns.value, fetched_at: sns.fetched_at, source: sns.source } : null} holders={holders} />);
+  }, <TokenPage t={t} m={m} canisters={canisters} pools={pools} incidents={incidents} trust={trust} sns={sns ? { ...sns.value, fetched_at: sns.fetched_at, source: sns.source } : null} holders={holders} />);
 });
 
 // ---- markets ---------------------------------------------------------------------------------------------
@@ -303,7 +306,8 @@ app.get("/markets/whales", async (c) => {
   return page(c, { title: "Whale alerts", path: "/markets/whales", section: "markets", description: "The largest token transfers on the Internet Computer in the last 24 hours." }, <WhalesPage feed={{ value, source, fetched_at: third?.fetched_at ?? now() }} labels={whaleLabels} />);
 });
 app.get("/markets/screener", async (c) => {
-  const p = { kind: c.req.query("kind") ?? "", health: c.req.query("health") ?? "", minMcap: c.req.query("minMcap") ?? "", minVol: c.req.query("minVol") ?? "", minLiq: c.req.query("minLiq") ?? "", chg: c.req.query("chg") ?? "" };
+  const p = { kind: c.req.query("kind") ?? "", health: c.req.query("health") ?? "", minMcap: c.req.query("minMcap") ?? "", minVol: c.req.query("minVol") ?? "", minLiq: c.req.query("minLiq") ?? "", chg: c.req.query("chg") ?? "", trust: c.req.query("trust") ?? "" };
+  const rank: Record<string, number> = { A: 5, B: 4, C: 3, D: 2, E: 1 };
   const all = await q.listTokens(c.env.DB);
   const rows = all.filter((t) => {
     if (p.kind && t.kind !== p.kind) return false;
@@ -316,6 +320,8 @@ app.get("/markets/screener", async (c) => {
     if (p.chg === "down" && !((t.chg_24h ?? 0) < 0)) return false;
     if (p.chg === "up7" && !((t.chg_7d ?? 0) > 0)) return false;
     if (p.chg === "down7" && !((t.chg_7d ?? 0) < 0)) return false;
+    if (p.trust === "scored" && !(rank[t.trust_grade ?? ""] ?? 0)) return false;
+    if (rank[p.trust] && (rank[t.trust_grade ?? ""] ?? 0) < rank[p.trust]!) return false;
     return true;
   });
   return page(c, { title: "Token screener", path: "/markets/screener", section: "markets", description: "Screen Internet Computer tokens by market cap, liquidity, volume, momentum, and canister health." }, <ScreenerPage rows={rows} params={p} total={all.length} />);
@@ -477,6 +483,8 @@ const content: [string, string, string, FC][] = [
 ];
 for (const [path, title, description, Body] of content) app.get(path, (c) => page(c, { title, description, path, section: "none" }, <Body />));
 
+app.get("/trust-score", (c) => page(c, { title: "Token trust score methodology", path: "/trust-score", section: "markets", description: "How ICPWatch scores Internet Computer tokens: ledger control, mint authority, holder concentration, liquidity depth, canister health, and change history, with every point table published." }, <TrustMethodologyPage />));
+
 app.get("/status", async (c) => {
   const [runs, overview, failures] = await Promise.all([q.lastRuns(c.env.DB), indexOverview(c.env.DB), indexFailures(c.env.DB)]);
   return page(c, { title: "Status", path: "/status", section: "none", description: "ICPWatch collector status and data freshness." }, <StatusPage runs={runs} index={{ overview, failures }} />);
@@ -628,6 +636,7 @@ const JOBS = {
   rollup: (env: Env) => rollupLifeline(env),
   sns: (env: Env) => collectSns(env),
   labels: (env: Env) => collectLabels(env),
+  trust: (env: Env) => collectTrust(env, { labels: { labelsFor, isTreasuryOrPool } }),
   indexer: (env: Env) => indexJob(env),
   // One ledger only, used by the admin route below and local testing. Default 45 s budget.
   "indexer-one": (env: Env, ledger?: string) => indexTick(env, { budgetMs: 45_000, ledgers: ledger ? [ledger] : [], maxReconciles: 1 }).then(({ ledgers, ...s }) => ({ ...s, failed: ledgers.filter((l) => l.error).map((l) => ({ ledger: l.ledger, error: l.error })) })),
@@ -748,7 +757,7 @@ export default {
           break;
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "indexer"); break;
-        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "life-support"); break;
+        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); break;
       }
     };

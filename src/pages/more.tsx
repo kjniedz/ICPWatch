@@ -81,7 +81,7 @@ export function WhalesPage({ feed, labels }: { feed: Kv<WhaleTransfer[]> | null;
   );
 }
 
-export interface ScreenerParams { kind: string; health: string; minMcap: string; minVol: string; minLiq: string; chg: string }
+export interface ScreenerParams { kind: string; health: string; minMcap: string; minVol: string; minLiq: string; chg: string; trust: string }
 
 export function ScreenerPage({ rows, params, total }: { rows: TokenMarketRow[]; params: ScreenerParams; total: number }) {
   const sel = (name: string, value: string, options: [string, string][]) => (
@@ -98,6 +98,7 @@ export function ScreenerPage({ rows, params, total }: { rows: TokenMarketRow[]; 
         {sel("minLiq", params.minLiq, [["", "Any liquidity"], ["10000", "Liquidity over $10K"], ["100000", "Liquidity over $100K"]])}
         {sel("minVol", params.minVol, [["", "Any volume"], ["1000", "24h volume over $1K"], ["50000", "24h volume over $50K"]])}
         {sel("chg", params.chg, [["", "Any 24h move"], ["up", "Up 24h"], ["down", "Down 24h"], ["up7", "Up 7d"], ["down7", "Down 7d"]])}
+        {sel("trust", params.trust, [["", "Any trust score"], ["A", "Trust A only"], ["B", "Trust B or better"], ["C", "Trust C or better"], ["scored", "Scored (exclude insufficient data)"]])}
         <button class="btn btn-primary btn-sm" type="submit">Apply</button>
         <a class="fpill" href="/markets/screener">Reset</a>
       </form>

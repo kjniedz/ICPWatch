@@ -8,6 +8,7 @@ import { HistoryTimeline } from "./history";
 import { SnsDaoSection, type SnsSectionData } from "./sns";
 import type { EntityLabel } from "../labels";
 import { EntityName } from "./labels";
+import { TrustPanel, type StoredTrust } from "./trust";
 
 const parse = <T,>(s: string | null | undefined, fallback: T): T => {
   if (!s) return fallback;
@@ -29,8 +30,8 @@ export interface SnsInfo {
   proposals: { id: number; title: string; status: string }[]; fetched_at: number; source: string;
 }
 
-export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
-  t: TokenRow; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsSectionData | null;
+export function TokenPage({ t, m, canisters, pools, incidents, sns, holders, trust }: {
+  t: TokenRow; trust: StoredTrust | null; m: MarketRow | null; canisters: CanisterRow[]; pools: PoolRow[]; incidents: IncidentRow[]; sns: SnsSectionData | null;
   holders: {
     rows: { account: string; balance: number; share: number | null; label?: EntityLabel | null }[]; total: number | null; top10?: number | null; fetched_at: number; source: string;
     /** Set while our own index is still replaying this ledger: the list then comes from the third-party fallback. */
@@ -96,6 +97,9 @@ export function TokenPage({ t, m, canisters, pools, incidents, sns, holders }: {
           <div><div class="k">Listed</div><div class="v">{shortDate(t.listed_at)}</div><div class="s">via {t.listed_via}</div></div>
         </div>
       </div>
+
+      <div class="sec-head" id="trust"><h2>Trust score</h2><a class="link" style="font-size:12px" href="/trust-score">Methodology</a></div>
+      <TrustPanel row={trust} />
 
       <div class="sec-head"><h2>Where liquidity sits</h2></div>
       {liq.length ? (

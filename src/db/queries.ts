@@ -29,7 +29,7 @@ export interface MarketRow {
   liquidity: string | null; spark_7d: string | null; sources: string | null; updated_at: number;
 }
 
-export type TokenMarketRow = TokenRow & Partial<MarketRow> & { worst_health: string | null; health_note: string | null; canister_count: number };
+export type TokenMarketRow = TokenRow & Partial<MarketRow> & { worst_health: string | null; health_note: string | null; canister_count: number; trust_grade: string | null; trust_score: number | null };
 
 export interface PoolRow {
   id: string; dex: string; token0: string; token1: string; symbol0: string | null; symbol1: string | null;
@@ -140,9 +140,10 @@ export const listTokens = (db: D1Database) =>
       )
       SELECT t.*, m.price_usd, m.price_icp, m.chg_24h, m.chg_7d, m.chg_30d, m.vol_24h_usd, m.tvl_usd, m.mcap_usd, m.fdv_usd,
              m.liquidity, m.spark_7d, m.sources, m.updated_at AS market_updated_at,
-             w.health worst_health, w.role health_note, COALESCE(h.canister_count, 0) canister_count
+             w.health worst_health, w.role health_note, COALESCE(h.canister_count, 0) canister_count, ts.grade trust_grade, ts.score trust_score
       FROM tokens t
       LEFT JOIN market m ON m.token_id = t.id
+      LEFT JOIN trust_scores ts ON ts.token_id = t.id
       LEFT JOIN h ON h.token_id = t.id
       LEFT JOIN w ON w.token_id = t.id AND w.rn = 1
       WHERE t.hidden = 0

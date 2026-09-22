@@ -1,6 +1,8 @@
 import type { Kv, PoolRow, TokenMarketRow } from "../db/queries";
 import { fmtCompact, fmtNum, fmtPct, fmtUsd, pctClass } from "../lib/format";
 import { Empty, Fresh, HealthPill, Spark, TokenLogo } from "../ui/components";
+import { TrustBadge } from "./trust";
+import type { Grade } from "../trust/score";
 
 export interface MarketTotals { tvl_usd: number; vol_24h_usd: number; pools: number; tokens: number; priced: number; dexes: string[]; stranded_tvl_usd?: number; dead_ledgers?: number }
 
@@ -56,6 +58,7 @@ export function TokenTable({ rows, id = "tokens" }: { rows: TokenMarketRow[]; id
             <th data-sort="num">Liquidity sits on</th>
             <th class="hide-m">Last 7 days</th>
             <th data-sort="text">Health</th>
+            <th data-sort="num" title="Trust score: who controls the ledger, who can mint, concentration, liquidity, health, history. See /trust-score">Trust</th>
           </tr>
         </thead>
         <tbody>
@@ -63,7 +66,7 @@ export function TokenTable({ rows, id = "tokens" }: { rows: TokenMarketRow[]; id
             const liq = topLiq(t);
             const h = tokenHealthLabel(t);
             return (
-              <tr data-id={t.id} data-kind={t.kind} class={isDeadLedger(t) ? "dead" : undefined} data-hstate={isDeadLedger(t) ? "dead risk" : h.health === "healthy" ? "healthy" : h.health === "unknown" ? "unknown" : "risk"} data-search={`${t.symbol} ${t.name} ${t.id}`}>
+              <tr data-id={t.id} data-kind={t.kind} data-trust={t.trust_grade ?? "NA"} class={isDeadLedger(t) ? "dead" : undefined} data-hstate={isDeadLedger(t) ? "dead risk" : h.health === "healthy" ? "healthy" : h.health === "unknown" ? "unknown" : "risk"} data-search={`${t.symbol} ${t.name} ${t.id}`}>
                 <td><button class="star" data-star={t.id} aria-label={`Watch ${t.symbol}`} aria-pressed="false">&#9734;</button></td>
                 <td class="muted hide-m">{i + 1}</td>
                 <td data-v={t.name.toLowerCase()}>
@@ -91,6 +94,7 @@ export function TokenTable({ rows, id = "tokens" }: { rows: TokenMarketRow[]; id
                 </td>
                 <td class="hide-m"><Spark data={parse<number[] | null>(t.spark_7d, null)} /></td>
                 <td data-v={h.health}><a href={`/token/${t.id}#health`}><HealthPill health={h.health} label={h.label} /></a></td>
+                <td data-v={t.trust_score ?? -1}><a href={`/token/${t.id}#trust`}><TrustBadge grade={(t.trust_grade ?? "NA") as Grade} score={t.trust_score} /></a></td>
               </tr>
             );
           })}
