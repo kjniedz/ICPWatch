@@ -31,6 +31,8 @@
   ],
   "vars": {
     "SITE_URL": "https://icpwatch.com",
-    "IC_HOST": "https://icp-api.io"
+    "IC_HOST": "https://icp-api.io",
+    "TELEGRAM_COMMUNITY": "icpwatch",
+    "TELEGRAM_CHANNEL": "icpwatch_alerts"
   }
 }
