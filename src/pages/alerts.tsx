@@ -73,7 +73,7 @@ export function AlertsPage({ target, channels, result }: {
           <input id="target" type="text" name="target" required placeholder="you@example.com, Telegram chat id, Discord webhook URL, or https:// endpoint" autocomplete="off" spellcheck={false} />
           <div class="hint">
             Email: we send one confirmation link first{channels.email ? "" : " (email delivery is being set up, so subscriptions are stored and confirmed once it is live)"}.
-            Telegram: message the ICPWatch bot with /start to get your chat id{channels.telegram ? "" : " (bot is being set up)"}.
+            Telegram: message the ICPWatch bot with /start to get your chat id, or subscribe from the chat with /watch (<a class="link" href="/telegram">how</a>){channels.telegram ? "" : " (bot is being set up)"}.
             Discord: paste a channel webhook URL. Webhook: we POST signed JSON, with the signing secret shown once after you subscribe.
           </div>
         </div>

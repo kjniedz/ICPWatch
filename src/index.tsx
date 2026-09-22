@@ -40,6 +40,8 @@ import { launches, proposalFeed, unlockCalendar } from "./sns/feed";
 import { HoldersPage } from "./pages/holders";
 import { AboutSection, LinkSubmitPage, LinksAdmin } from "./pages/meta";
 import { PriceAlertsPage } from "./pages/pricealerts";
+import { TelegramPage } from "./pages/telegram";
+import { handleUpdate, setupTelegram, telegramFeedsJob, webhookPath, type TgUpdate } from "./telegram";
 import { createRules, describeRule, evaluatePriceRules, parseRules, recentPriceEvents } from "./alerts/price";
 import { sendMessage } from "./alerts/notify";
 import { collectTokenMeta, descriptionFor, linksFor, pendingLinks, reviewLink, submitLink } from "./meta";
@@ -232,6 +234,29 @@ app.post("/markets/alerts", async (c) => {
     }
   }
   return page(c, priceAlertsMeta, <PriceAlertsPage token={token} price={m?.price_usd ?? null} channels={channels} result={{ ok: true, message }} events={events} />);
+});
+
+// ---- telegram --------------------------------------------------------------------------------------------
+
+app.get("/telegram", (c) => page(c, { title: "ICPWatch Telegram bot", path: "/telegram", section: "lifeline", description: "Prices, canister health, SNS treasuries, and alerts for the Internet Computer in Telegram, with group feeds, rate limits, and quiet hours." }, <TelegramPage live={!!c.env.TELEGRAM_BOT_TOKEN} botName={c.env.TELEGRAM_BOT_NAME ?? null} />));
+app.post("/telegram/webhook/:path", async (c) => {
+  if (!c.env.TELEGRAM_BOT_TOKEN || c.req.param("path") !== (await webhookPath(c.env.TELEGRAM_BOT_TOKEN))) return c.text("not found", 404);
+  const update = (await c.req.json().catch(() => null)) as TgUpdate | null;
+  if (!update) return c.text("bad request", 400);
+  // Always 200 to Telegram; a thrown error would make it retry the same update forever.
+  c.executionCtx.waitUntil(handleUpdate(c.env, update).catch((e) => console.error("telegram update", e)));
+  return c.text("ok");
+});
+app.post("/admin/telegram/setup", async (c) => {
+  if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+  return c.json(await setupTelegram(c.env));
+});
+/** Simulate an incoming message without Telegram: {"chat_id": "...", "text": "/price CHAT"}. Sends nothing unless the token exists. */
+app.post("/admin/telegram/simulate", async (c) => {
+  if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+  const body = (await c.req.json()) as { chat_id?: string; text?: string; kind?: string; admin?: boolean };
+  const r = await handleUpdate(c.env, { update_id: 0, message: { message_id: 0, chat: { id: Number(body.chat_id ?? 1), type: body.kind ?? "private" }, date: now(), text: body.text ?? "" } });
+  return c.json(r ?? { ignored: true });
 });
 
 app.post("/lifeline/alerts", async (c) => {
@@ -907,6 +932,7 @@ const JOBS = {
   "holder-daily": (env: Env) => holderDailyJob(env),
   "token-meta": (env: Env) => collectTokenMeta(env),
   "price-alerts": (env: Env) => evaluatePriceRules(env),
+  "telegram-feeds": (env: Env) => telegramFeedsJob(env),
 } satisfies Record<string, (env: Env, arg?: string) => Promise<unknown>>;
 
 /**
@@ -1001,7 +1027,7 @@ app.get("/sitemap.xml", async (c) => {
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
     ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/sns/proposals", today, 0.7], ["/sns/unlocks", today, 0.7], ["/sns/compare", null, 0.5], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
-    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
+    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/telegram", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
     ...canisters.results.map((x) => [`/canister/${x.id}`, day(x.measured_at), 0.5] as [string, string | null, number]), ...subnets.results.map((s) => [`/subnet/${s.id}`, today, 0.5] as [string, string, number]),
@@ -1031,7 +1057,7 @@ export default {
           await runJob(env, "reserves");
           break;
         }
-        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "price-alerts"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
+        case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "price-alerts"); await runJob(env, "telegram-feeds"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
         case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "token-meta"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); await runJob(env, "holder-daily"); break;
       }
