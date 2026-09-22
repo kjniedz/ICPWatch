@@ -9,6 +9,7 @@ import { collectLifeline, rollupLifeline } from "./collectors/lifeline";
 import { collectMarkets } from "./collectors/markets";
 import { collectNetwork } from "./collectors/network";
 import { collectSns } from "./collectors/sns";
+import { collectSnsDeep } from "./collectors/snsdeep";
 import * as q from "./db/queries";
 import { indexJob, indexTick, reconcile } from "./indexer";
 import { collectLabels, labelsFor, listLabels, listSubmissions, reviewSubmission, searchLabels, submitLabel, type EntityLabel } from "./labels";
@@ -22,7 +23,7 @@ import { SupportersList } from "./pages/fund";
 import { isTreasuryOrPool } from "./labels";
 import { holderStats, indexFailures, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
-import { now } from "./lib/format";
+import { fmtUsd, now } from "./lib/format";
 import { ALERT_TYPES, EVENT_TYPES } from "./lib/health";
 import { enroll, lifeSupportTick, registry as lsRegistry, setCaps, setEnrollmentState, setKillSwitch, status as lsStatus } from "./lifesupport";
 import { LifeSupportRegistryPage } from "./pages/lifesupport";
@@ -232,6 +233,7 @@ app.get("/canister/:id", async (c) => {
   const fund = can.run_status === "deleted" ? null : await fundingFor(c.env, id).catch(() => null);
   return page(c, {
     title: `${can.label} canister health`, path: `/canister/${id}`, section: "lifeline", chart: true, fund: !!fund,
+    crumbs: [["Lifeline", "/lifeline"], ...(can.token_id ? [[siblings.find((s) => s.role === "ledger")?.label ?? can.token_id, `/token/${can.token_id}`] as [string, string]] : []), [can.label, `/canister/${id}`]],
     description: `Cycle balance, burn rate, freeze runway, controllers, and upgrade history for ${can.label} (${id}) on the Internet Computer.`,
   }, <CanisterPage c={can} changes={changes} history={history} incidents={incidents} labels={ctrlLabels} fund={fund} siblings={siblings.filter((s) => ["ledger", "index", "archive"].includes(s.role))} />);
 });
@@ -269,7 +271,10 @@ app.get("/token/:id", async (c) => {
   const incidents = await q.recentIncidents(db, 8, canisters.map((x) => x.id));
   return page(c, {
     title: `${t.name} (${t.symbol}) price, liquidity, and canister health`, path: `/token/${t.id}`, section: "markets", chart: true,
-    description: `${t.symbol} price aggregated across ICP DEXs, where its liquidity sits, top holders, and the cycle health of its ledger, index, and archive canisters.`,
+    description: `${t.symbol} ${m?.price_usd != null ? `is ${fmtUsd(m.price_usd)} ` : "price "}aggregated across ICP DEXs, with market cap, liquidity, top holders, trust score, and the cycle health of its ledger, index, and archive canisters.`,
+    crumbs: [["Markets", "/markets"], [`${t.name} (${t.symbol})`, `/token/${t.id}`]],
+    jsonLd: { "@context": "https://schema.org", "@type": "WebPage", name: `${t.name} (${t.symbol})`, url: `https://icpwatch.com/token/${t.id}`, dateModified: m?.updated_at ? new Date(m.updated_at * 1000).toISOString() : undefined,
+      about: { "@type": "Thing", name: t.name, alternateName: t.symbol, identifier: t.id, description: `ICRC-1 token on the Internet Computer, ledger canister ${t.id}` } },
   }, <TokenPage t={t} m={m} canisters={canisters} pools={pools} incidents={incidents} trust={trust} sns={sns ? { ...sns.value, fetched_at: sns.fetched_at, source: sns.source } : null} holders={holders} />);
 });
 
@@ -366,7 +371,7 @@ app.get("/subnet/:id", async (c) => {
   const s = await q.getSubnet(c.env.DB, c.req.param("id"));
   if (!s) return page(c, { title: "Subnet not found", path: c.req.path, section: "network", description: "Not found", noindex: true }, <NotFound what="That subnet is not known." />, 404);
   const watched = (await c.env.DB.prepare("SELECT id, label, burn_per_day, cycles, health FROM canisters WHERE subnet_id = ? ORDER BY (burn_per_day IS NULL), burn_per_day DESC LIMIT 25").bind(s.id).all<{ id: string; label: string; burn_per_day: number | null; cycles: number | null; health: string }>()).results;
-  return page(c, { title: `Subnet ${s.id.slice(0, 11)}`, path: `/subnet/${s.id}`, section: "network", chart: true, description: `Internet Computer subnet ${s.id}: type, nodes, canisters, cycle burn, block rate, and the top measured canisters by burn.` }, <SubnetPage s={s} watched={watched} />);
+  return page(c, { title: `Subnet ${s.id.slice(0, 11)}`, crumbs: [["Network", "/network"], ["Subnets", "/network/subnets"], [s.id.slice(0, 11), `/subnet/${s.id}`]], path: `/subnet/${s.id}`, section: "network", chart: true, description: `Internet Computer subnet ${s.id}: type, nodes, canisters, cycle burn, block rate, and the top measured canisters by burn.` }, <SubnetPage s={s} watched={watched} />);
 });
 app.get("/network/proposals", async (c) => {
   const status = c.req.query("status") ?? "";
@@ -375,7 +380,7 @@ app.get("/network/proposals", async (c) => {
 app.get("/proposal/:id", async (c) => {
   const p = await q.getProposal(c.env.DB, Number(c.req.param("id")) || 0);
   if (!p) return page(c, { title: "Proposal not found", path: c.req.path, section: "network", description: "Not found", noindex: true }, <NotFound what="That proposal is not in our index yet." />, 404);
-  return page(c, { title: `Proposal ${p.id}: ${p.title ?? ""}`.slice(0, 110), path: `/proposal/${p.id}`, section: "network", description: `NNS proposal ${p.id}: ${p.title ?? ""}. Topic, voting progress, outcome, and the full summary.`.slice(0, 250) }, <ProposalPage p={p} summaryHtml={renderMarkdown(p.summary ?? "")} />);
+  return page(c, { title: `Proposal ${p.id}: ${p.title ?? ""}`.slice(0, 110), crumbs: [["Network", "/network"], ["Proposals", "/network/proposals"], [`Proposal ${p.id}`, `/proposal/${p.id}`]], path: `/proposal/${p.id}`, section: "network", description: `NNS proposal ${p.id}: ${p.title ?? ""}. Topic, voting progress, outcome, and the full summary.`.slice(0, 250) }, <ProposalPage p={p} summaryHtml={renderMarkdown(p.summary ?? "")} />);
 });
 
 // ---- ck reserves -------------------------------------------------------------------------------------------
@@ -391,7 +396,7 @@ app.get("/reserves/:asset", async (c) => {
   const row = await c.env.DB.prepare("SELECT * FROM reserves_latest WHERE asset = ? OR symbol = ? COLLATE NOCASE").bind(c.req.param("asset"), c.req.param("asset")).first<LatestRow>();
   if (!row) return page(c, { title: "Unknown asset", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That ck asset is not tracked." />, 404);
   const [minter, ledger] = await Promise.all([q.getCanister(c.env.DB, row.minter_id), q.getCanister(c.env.DB, row.ledger_id)]);
-  return page(c, { title: `${row.symbol} reserves and backing`, path: `/reserves/${row.asset}`, section: "markets", chart: true, description: `${row.symbol}: native reserves held by the minter versus supply on the Internet Computer, reconciled line by line, with in-flight deposits and withdrawals and the minter's cycle health.` }, <ReserveAssetPage row={row} minter={minter ?? null} ledger={ledger ?? null} />);
+  return page(c, { title: `${row.symbol} reserves and backing`, crumbs: [["Markets", "/markets"], ["Reserves", "/reserves"], [row.symbol, `/reserves/${row.asset}`]], path: `/reserves/${row.asset}`, section: "markets", chart: true, description: `${row.symbol}: native reserves held by the minter versus supply on the Internet Computer, reconciled line by line, with in-flight deposits and withdrawals and the minter's cycle health.` }, <ReserveAssetPage row={row} minter={minter ?? null} ledger={ledger ?? null} />);
 });
 
 // ---- labels ---------------------------------------------------------------------------------------------
@@ -695,6 +700,7 @@ const JOBS = {
   rollup: (env: Env) => rollupLifeline(env),
   sns: (env: Env) => collectSns(env),
   labels: (env: Env) => collectLabels(env),
+  "sns-deep": (env: Env) => collectSnsDeep(env),
   trust: (env: Env) => collectTrust(env, { labels: { labelsFor, isTreasuryOrPool } }),
   reserves: (env: Env) => collectReserves(env),
   "fund-watch": (env: Env) => watchDeposits(env),
@@ -788,13 +794,23 @@ app.post("/admin/simulate", async (c) => {
 app.get("/robots.txt", (c) => c.text(`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nDisallow: /search\nDisallow: /portfolio\nSitemap: ${c.env.SITE_URL}/sitemap.xml\n`));
 app.get("/sitemap.xml", async (c) => {
   const db = c.env.DB;
-  const [tokens, canisters, subnets, proposals] = await Promise.all([
-    db.prepare("SELECT id FROM tokens WHERE hidden = 0").all<{ id: string }>(), db.prepare("SELECT id FROM canisters LIMIT 20000").all<{ id: string }>(),
+  const [tokens, canisters, subnets, proposals, reserves] = await Promise.all([
+    db.prepare("SELECT id FROM tokens WHERE hidden = 0").all<{ id: string }>(), db.prepare("SELECT id, measured_at FROM canisters LIMIT 20000").all<{ id: string; measured_at: number | null }>(),
     db.prepare("SELECT id FROM subnets").all<{ id: string }>(), db.prepare("SELECT id FROM proposals ORDER BY id DESC LIMIT 2000").all<{ id: number }>(),
+    db.prepare("SELECT asset FROM reserves_latest").all<{ asset: string }>().catch(() => ({ results: [] as { asset: string }[] })),
   ]);
-  const urls = ["/", "/lifeline", "/markets", "/network", "/lifeline/life-support", "/lifeline/incidents", "/markets/pools", "/markets/new", "/markets/whales", "/markets/screener", "/network/subnets", "/network/proposals", ...content.map((x) => x[0]),
-    ...tokens.results.map((t) => `/token/${t.id}`), ...canisters.results.map((x) => `/canister/${x.id}`), ...subnets.results.map((s) => `/subnet/${s.id}`), ...proposals.results.map((p) => `/proposal/${p.id}`)];
-  return c.body(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.map((u) => `<url><loc>${c.env.SITE_URL}${u}</loc></url>`).join("")}</urlset>`, 200, { "content-type": "application/xml", "cache-control": "public, max-age=3600" });
+  const day = (t: number | null | undefined) => (t ? new Date(t * 1000).toISOString().slice(0, 10) : null);
+  const today = day(now());
+  // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
+  const urls: [string, string | null, number][] = [
+    ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
+    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
+    ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
+    ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
+    ...canisters.results.map((x) => [`/canister/${x.id}`, day(x.measured_at), 0.5] as [string, string | null, number]), ...subnets.results.map((s) => [`/subnet/${s.id}`, today, 0.5] as [string, string, number]),
+    ...proposals.results.map((p) => [`/proposal/${p.id}`, null, 0.4] as [string, null, number])];
+  const xml = urls.map(([u, mod, pri]) => `<url><loc>${c.env.SITE_URL}${u}</loc>${mod ? `<lastmod>${mod}</lastmod>` : ""}<priority>${pri}</priority></url>`).join("");
+  return c.body(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${xml}</urlset>`, 200, { "content-type": "application/xml", "cache-control": "public, max-age=3600" });
 });
 
 app.notFound((c) => page(c, { title: "Not found", path: c.req.path, section: "none", description: "Page not found.", noindex: true }, <NotFound />, 404));
@@ -819,7 +835,7 @@ export default {
           break;
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "fund-watch"); await runJob(env, "indexer"); break;
-        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "life-support"); break;
+        case "17 * * * *": await runJob(env, "discovery"); await runJob(env, "network"); await runJob(env, "whales"); await runJob(env, "sns"); await runJob(env, "sns-deep"); await runJob(env, "history"); await runJob(env, "labels"); await runJob(env, "trust"); await runJob(env, "life-support"); break;
         case "23 3 * * *": await runJob(env, "rollup"); break;
       }
     };

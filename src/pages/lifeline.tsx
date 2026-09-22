@@ -111,7 +111,7 @@ export function IncidentFeed({ items }: { items: IncidentRow[] }) {
     <div class="stack">
       {items.map((i) => {
         // Controller and code changes are point-in-time events: stored closed, never shown as "resolved".
-        const resolved = i.state === "resolved" && i.type !== "controller_change" && i.type !== "module_change";
+        const resolved = i.state === "resolved" && !["controller_change", "module_change", "sns_proposal", "treasury_movement"].includes(i.type);
         return (
           <a class="card feed-item" href={`/canister/${i.canister_id}`}>
             <span class={`d ${resolved ? "ok" : (incidentDot[i.type] ?? "risk")}`} aria-hidden="true"></span>

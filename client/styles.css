@@ -342,6 +342,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pcard .body { padding: 18px 20px 16px; display: flex; flex-direction: column; flex: 1; }
 .pcard h3 { font-size: 17px; font-weight: 700; }
 .pcard p { font-size: 13px; color: var(--text-2); margin-top: 8px; flex: 1; }
+.pcard .feat { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.pcard .feat li { padding-left: 16px; position: relative; }
+.pcard .feat li::before { content: ""; position: absolute; left: 0; top: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--grad); }
 .pcard .foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; border-top: 1px solid var(--border); margin-top: 16px; padding-top: 12px; font-size: 11.5px; color: var(--muted); }
 .pcard .foot b { color: var(--link); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
 .tenets { display: flex; justify-content: center; gap: 12px 28px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 34px; }

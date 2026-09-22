@@ -13,6 +13,8 @@ export interface PageMeta {
   section: Section;
   /** JSON-LD object, optional */
   jsonLd?: Record<string, unknown>;
+  /** Breadcrumb trail for BreadcrumbList structured data: [label, path] */
+  crumbs?: [string, string][];
   noindex?: boolean;
   /** Load the chart island on this page */
   chart?: boolean;
@@ -21,6 +23,11 @@ export interface PageMeta {
 }
 
 const SITE = "https://icpwatch.com";
+
+const orgLd = {
+  "@context": "https://schema.org", "@type": "Organization", name: "ICPWatch", url: SITE, logo: `${SITE}/logo-mark.svg`,
+  description: "Markets, network activity, and canister health for the Internet Computer.",
+};
 
 // Runs before first paint so the stored theme never flashes. Dark is the default.
 const themeBoot = `(function(){try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t;else document.documentElement.dataset.theme="dark"}catch(e){document.documentElement.dataset.theme="dark"}})()`;
@@ -41,7 +48,7 @@ export function Layout({ meta, children }: { meta: PageMeta; children?: Child })
         <title>{fullTitle}</title>
         <meta name="description" content={meta.description} />
         <link rel="canonical" href={url} />
-        {meta.noindex ? <meta name="robots" content="noindex" /> : null}
+        <meta name="robots" content={meta.noindex ? "noindex" : "index, follow, max-image-preview:large, max-snippet:-1"} />
         <meta name="theme-color" content="#0a1019" />
         <meta property="og:site_name" content="ICPWatch" />
         <meta property="og:type" content="website" />
@@ -50,13 +57,20 @@ export function Layout({ meta, children }: { meta: PageMeta; children?: Child })
         <meta property="og:url" content={url} />
         <meta property="og:image" content={`${SITE}/og.png`} />
         <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={fullTitle} />
+        <meta name="twitter:description" content={meta.description} />
+        <meta name="twitter:image" content={`${SITE}/og.png`} />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <link rel="preload" href="/fonts/poppins-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin="" />
         <link rel="preload" href="/fonts/poppins-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin="" />
         <link rel="stylesheet" href={assets["styles.css"]} />
         <script>{raw(themeBoot)}</script>
         <script type="speculationrules">{raw(speculation)}</script>
+        <script type="application/ld+json">{raw(JSON.stringify(orgLd).replace(/</g, "\\u003c"))}</script>
         {meta.jsonLd ? <script type="application/ld+json">{raw(JSON.stringify(meta.jsonLd).replace(/</g, "\\u003c"))}</script> : null}
+        {meta.crumbs?.length ? <script type="application/ld+json">{raw(JSON.stringify({ "@context": "https://schema.org", "@type": "BreadcrumbList", itemListElement: meta.crumbs.map(([name, path], i) => ({ "@type": "ListItem", position: i + 1, name, item: SITE + path })) }).replace(/</g, "\\u003c"))}</script> : null}
         <script type="module" src={assets["app.js"]}></script>
         {meta.chart ? <script type="module" src={assets["chart.js"]}></script> : null}
         {meta.fund ? <script type="module" src={assets["fund.js"]}></script> : null}

@@ -29,7 +29,14 @@ export function HomePage({ s }: { s: HomeStats }) {
           </div>
           <div class="body">
             <h3>Markets</h3>
-            <p>Every token, priced across every major DEX. Supply and holders read straight from ICRC ledgers, plus whale tracking and SNS treasuries.</p>
+            <p>Every token, priced across every major DEX, with the things no other markets site shows.</p>
+            <ul class="feat">
+              <li>Trust score on every token, method published</li>
+              <li>Holders from our own ledger index, treasuries and pools named</li>
+              <li>Chain Fusion reserves: is ckBTC backed, live</li>
+              <li>SNS treasuries, proposals, and unlocks</li>
+              <li>Every number shows its source and freshness</li>
+            </ul>
             <div class="foot">
               <span>{fmtNum(s.tokens)} tokens &middot; {s.dexes} {s.dexes === 1 ? "DEX" : "DEXs"}</span>
               <b>Browse tokens &rarr;</b>
@@ -44,7 +51,14 @@ export function HomePage({ s }: { s: HomeStats }) {
           </div>
           <div class="body">
             <h3>Network</h3>
-            <p>One fast search box over canisters, principals, subnets, and proposals. Governance you can actually read.</p>
+            <p>The explorer that is actually fast, with everything linked together.</p>
+            <ul class="feat">
+              <li>One search box: canisters, principals, accounts, tokens, subnets, proposals</li>
+              <li>Entity labels: who is behind an account</li>
+              <li>Subnets ranked by burn, with charts</li>
+              <li>NNS proposals you can read</li>
+              <li>Fast first load: server rendered, no app shell to wait on</li>
+            </ul>
             <div class="foot">
               <span>{s.subnets != null ? `${fmtNum(s.subnets)} subnets` : "subnets"} &middot; {s.canisters != null ? `${fmtCompact(s.canisters)} canisters` : "canisters"}</span>
               <b>Explore &rarr;</b>
@@ -59,7 +73,14 @@ export function HomePage({ s }: { s: HomeStats }) {
           </div>
           <div class="body">
             <h3>Lifeline</h3>
-            <p>Cycle monitoring, freeze alerts, and life support that keeps abandoned canisters alive for pennies until someone adopts them.</p>
+            <p>Canister health for the whole Internet Computer. Only on ICPWatch.</p>
+            <ul class="feat">
+              <li>Cycles, burn, and time to freeze for every token's ledger, index, and archives</li>
+              <li>Alerts: low cycles, frozen, controller or code changed</li>
+              <li>Fund any canister straight through the CMC</li>
+              <li>Life support for abandoned canisters</li>
+              <li>Mobile done properly, so you can check from anywhere</li>
+            </ul>
             <div class="foot">
               <span>{fmtNum(s.watched)} watched &middot; {fmtNum(s.atRisk)} at risk</span>
               <b>Watch a canister &rarr;</b>
@@ -68,11 +89,6 @@ export function HomePage({ s }: { s: HomeStats }) {
         </a>
       </div>
 
-      <div class="tenets">
-        <span>Fast first load</span>
-        <span>Mobile done properly</span>
-        <span>Every number shows its source and freshness</span>
-      </div>
     </div>
   );
 }

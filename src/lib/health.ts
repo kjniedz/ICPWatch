@@ -192,8 +192,8 @@ export type AlertType = "low_cycles" | "frozen" | "approaching_deletion" | "burn
 export const ALERT_TYPES: AlertType[] = ["low_cycles", "frozen", "approaching_deletion", "burn_anomaly"];
 
 /** Point-in-time security events from on-chain canister history. They fire once and never "resolve". */
-export type EventType = "controller_change" | "module_change";
-export const EVENT_TYPES: EventType[] = ["controller_change", "module_change"];
+export type EventType = "controller_change" | "module_change" | "sns_proposal" | "treasury_movement";
+export const EVENT_TYPES: EventType[] = ["controller_change", "module_change", "sns_proposal", "treasury_movement"];
 
 export interface Condition {
   /** the trip condition holds right now */
