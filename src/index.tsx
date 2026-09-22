@@ -41,6 +41,8 @@ import { HoldersPage } from "./pages/holders";
 import { AboutSection, LinkSubmitPage, LinksAdmin } from "./pages/meta";
 import { PriceAlertsPage } from "./pages/pricealerts";
 import { TelegramPage } from "./pages/telegram";
+import { SnapshotFormPage, SnapshotPage, SnapshotsIndexPage } from "./pages/snapshots";
+import { getSnapshot, listSnapshots, parseCsv, parseFilters, snapshotCsv, takeSnapshot } from "./snapshots";
 import { handleUpdate, setupTelegram, telegramFeedsJob, webhookPath, type TgUpdate } from "./telegram";
 import { createRules, describeRule, evaluatePriceRules, parseRules, recentPriceEvents } from "./alerts/price";
 import { sendMessage } from "./alerts/notify";
@@ -431,6 +433,43 @@ app.get("/token/:id/holders", async (c) => {
     noindex: pageNo > 1 || !!query,
   };
   return page(c, meta, <HoldersPage t={t} data={data} conc={conc} buckets={buckets} mix={mix} history={history} />);
+});
+const snapshotMeta = (t: q.TokenRow): PageMeta => ({ title: `${t.symbol} holder snapshot: hashed holder list at a block`, path: `/token/${t.id}/snapshot`, section: "markets", description: `Take a frozen, SHA-256 hashed snapshot of every ${t.name} holder at the current block from ICPWatch's reconciled ledger index, with balance and entity filters, as CSV or JSON.`, crumbs: [["Markets", "/markets"], [`${t.name} (${t.symbol})`, `/token/${t.id}`], ["Snapshot", `/token/${t.id}/snapshot`]] });
+app.get("/token/:id/snapshot", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return page(c, { title: "Token not found", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That token is not tracked." />, 404);
+  const [progress, previous] = await Promise.all([indexProgress(c.env.DB, t.id).catch(() => null), listSnapshots(c.env.DB, t.id)]);
+  return page(c, snapshotMeta(t), <SnapshotFormPage t={t} progress={progress} previous={previous} isSns={t.kind === "sns"} />);
+});
+app.post("/token/:id/snapshot", async (c) => {
+  const t = await q.getToken(c.env.DB, c.req.param("id"));
+  if (!t) return c.text("unknown token", 404);
+  const form = await c.req.parseBody({ all: true });
+  if (form.website) return c.redirect(`/token/${t.id}/snapshot`, 303);
+  const r = await takeSnapshot(c.env, t.id, { lookThrough: t.kind === "sns" && String(form.look_through ?? "") === "1", filters: parseFilters(form as Record<string, unknown>), note: form.note ? String(form.note) : undefined, totalSupplyRaw: t.total_supply });
+  if (r.ok) return c.redirect(`/snapshot/${r.id}`, 303);
+  const [progress, previous] = await Promise.all([indexProgress(c.env.DB, t.id).catch(() => null), listSnapshots(c.env.DB, t.id)]);
+  return page(c, snapshotMeta(t), <SnapshotFormPage t={t} progress={progress} previous={previous} isSns={t.kind === "sns"} result={{ ok: false, message: r.error }} />);
+});
+app.get("/snapshots", async (c) => page(c, { title: "Holder snapshots", path: "/snapshots", section: "markets", description: "Frozen, hashed holder lists of Internet Computer tokens, taken from ICPWatch's reconciled ledger index." }, <SnapshotsIndexPage items={await listSnapshots(c.env.DB)} />));
+app.get("/snapshot/:file", async (c) => {
+  const file = c.req.param("file");
+  const ext = file.endsWith(".csv") ? "csv" : file.endsWith(".json") ? "json" : "html";
+  const id = ext === "html" ? file : file.slice(0, -(ext.length + 1));
+  const s = await getSnapshot(c.env.DB, id);
+  if (!s) return ext === "html" ? page(c, { title: "Snapshot not found", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="No snapshot has that id." />, 404) : c.text("not found", 404);
+  const csv = (await snapshotCsv(c.env.DB, s.id)) ?? "";
+  const immutable = { "cache-control": "public, max-age=31536000, immutable", "x-snapshot-sha256": s.hash };
+  if (ext === "csv") return c.body(csv, 200, { ...immutable, "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${s.symbol.toLowerCase()}-holders-block-${s.block}.csv"` });
+  if (ext === "json") {
+    const { filters, ...meta } = s;
+    return c.json({ ...meta, filters: JSON.parse(filters) as unknown, csv_sha256: s.hash, source: "ICPWatch block index, reconciled against icrc1_total_supply", rows: parseCsv(csv) }, 200, immutable);
+  }
+  return page(c, {
+    title: `${s.symbol} holders at block ${s.block}`, path: `/snapshot/${s.id}`, section: "markets",
+    description: `Snapshot of ${s.rows} ${s.symbol} holders at block ${s.block}, taken ${new Date(s.taken_at * 1000).toISOString().slice(0, 10)}, SHA-256 ${s.hash.slice(0, 16)}. Permanent, verifiable, CSV and JSON.`,
+    crumbs: [["Markets", "/markets"], [s.symbol, `/token/${s.ledger}`], ["Snapshot", `/snapshot/${s.id}`]],
+  }, <SnapshotPage s={s} rows={parseCsv(csv)} url={c.env.SITE_URL} />);
 });
 app.get("/token/:id/holders.csv", async (c) => {
   const t = await q.getToken(c.env.DB, c.req.param("id"));
@@ -1027,7 +1066,7 @@ app.get("/sitemap.xml", async (c) => {
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
     ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/sns/proposals", today, 0.7], ["/sns/unlocks", today, 0.7], ["/sns/compare", null, 0.5], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
-    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/telegram", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
+    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/snapshots", today, 0.5], ["/telegram", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
     ...canisters.results.map((x) => [`/canister/${x.id}`, day(x.measured_at), 0.5] as [string, string | null, number]), ...subnets.results.map((s) => [`/subnet/${s.id}`, today, 0.5] as [string, string, number]),

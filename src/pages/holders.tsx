@@ -93,6 +93,7 @@ export function HoldersPage({ t, data, conc, buckets, mix, history }: {
         <div class="page-actions">
           <a class="btn btn-ghost" href={`/token/${t.id}/holders.csv${data.lookThrough ? "" : "?stake=0"}`} download>CSV (top {fmtNum(5000)})</a>
           <a class="btn btn-ghost" href={`/api/v1/token/${t.id}/holders${data.lookThrough ? "" : "?stake=0"}`}>JSON</a>
+          <a class="btn btn-ghost" href={`/token/${t.id}/snapshot`} title="A frozen, hashed copy at one block">Snapshot</a>
         </div>
       </div>
 
