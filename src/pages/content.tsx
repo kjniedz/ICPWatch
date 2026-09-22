@@ -130,6 +130,17 @@ export const ApiDocs = () => (
 
 export const Changelog = () => (
   <Prose title="Changelog">
+    <h2>0.3.0, September 2026</h2>
+    <ul>
+      <li>Entity labels: SNS treasuries and governance, minters and fee collectors, DEX pools, known neurons, and system canisters, each with its evidence and a visible confidence. Names show on holders, transfers, controllers, account pages, and in search. A review queue accepts community submissions with public evidence.</li>
+      <li>Token trust score: six explained factors with published point tables at /trust-score, a badge in the Markets list, and a screener filter. Tokens without enough data say so.</li>
+      <li>Chain Fusion reserves at /reserves: every ck asset's supply, minter reserves, and an independent native-chain reading, reconciled line by line with in-flight withdrawals and fees set aside, plus deviation and large mint or burn alerts.</li>
+      <li>Fund this canister: keep-alive and revive amounts computed per canister, payment by sending ICP with the TPUP memo to the canister's own CMC account (ICPWatch notifies the conversion), a Plug wallet path in beta, and a public record of supporters.</li>
+      <li>Block index: holder data is only shown as our own after it reconciles exactly against total supply; fee collectors are credited (ckBTC reconciles to zero); failures carry a reason; the ICP ledger is being indexed.</li>
+      <li>Account pages load in under a second: balances from the index where reconciled, a streamed live wave for the rest.</li>
+      <li>Burn estimates are a duration-weighted median capped by the net trend, so canisters that shuffle cycles no longer look like they are burning them.</li>
+      <li>Frozen canisters measured through a blackhole now show burn, an estimated threshold, and a projected deletion date. Dead-ledger tokens are marked and their stranded liquidity is kept out of the totals.</li>
+    </ul>
     <h2>0.2.0, September 2026</h2>
     <ul>
       <li>Lifeline: every token as one group (ledger, index, archives) with its worst state, and the long tail of DEX tokens is now watched too. Dozens of token ledgers turned out to be uninstalled while their pools are still listed.</li>
