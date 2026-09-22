@@ -15,6 +15,8 @@ import { collectLabels, labelsFor, listLabels, listSubmissions, reviewSubmission
 import { LabelSubmitPage, LabelsPage, SubmissionsAdmin } from "./pages/labels";
 import { TrustMethodologyPage, type StoredTrust } from "./pages/trust";
 import { collectTrust } from "./trust/collect";
+import { collectReserves } from "./reserves/collect";
+import { ReserveAssetPage, ReservesPage, type LatestRow } from "./pages/reserves";
 import { isTreasuryOrPool } from "./labels";
 import { holderStats, indexFailures, indexOverview, indexProgress, largeTransfers, topHolders } from "./indexer/queries";
 import type { Env } from "./env";
@@ -372,6 +374,22 @@ app.get("/proposal/:id", async (c) => {
   return page(c, { title: `Proposal ${p.id}: ${p.title ?? ""}`.slice(0, 110), path: `/proposal/${p.id}`, section: "network", description: `NNS proposal ${p.id}: ${p.title ?? ""}. Topic, voting progress, outcome, and the full summary.`.slice(0, 250) }, <ProposalPage p={p} summaryHtml={renderMarkdown(p.summary ?? "")} />);
 });
 
+// ---- ck reserves -------------------------------------------------------------------------------------------
+
+app.get("/reserves", async (c) => {
+  const rows = (await c.env.DB.prepare("SELECT * FROM reserves_latest ORDER BY CASE asset WHEN 'ckBTC' THEN 0 WHEN 'ckETH' THEN 1 WHEN 'ckUSDC' THEN 2 WHEN 'ckUSDT' THEN 3 ELSE 9 END, asset").all<LatestRow>()).results;
+  const minters = [...new Set(rows.map((r) => r.minter_id))];
+  const health = new Map<string, q.CanisterRow>();
+  if (minters.length) for (const m of (await c.env.DB.prepare(`SELECT * FROM canisters WHERE id IN (${minters.map(() => "?").join(",")})`).bind(...minters).all<q.CanisterRow>()).results) health.set(m.id, m);
+  return page(c, { title: "Chain Fusion reserves: is ckBTC backed?", path: "/reserves", section: "markets", chart: false, description: "Continuous proof of backing for ckBTC, ckETH, ckUSDC and every ck asset: native-chain reserves versus supply on the Internet Computer, reconciled and explained." }, <ReservesPage rows={rows} health={health} />);
+});
+app.get("/reserves/:asset", async (c) => {
+  const row = await c.env.DB.prepare("SELECT * FROM reserves_latest WHERE asset = ? OR symbol = ? COLLATE NOCASE").bind(c.req.param("asset"), c.req.param("asset")).first<LatestRow>();
+  if (!row) return page(c, { title: "Unknown asset", path: c.req.path, section: "markets", description: "Not found", noindex: true }, <NotFound what="That ck asset is not tracked." />, 404);
+  const [minter, ledger] = await Promise.all([q.getCanister(c.env.DB, row.minter_id), q.getCanister(c.env.DB, row.ledger_id)]);
+  return page(c, { title: `${row.symbol} reserves and backing`, path: `/reserves/${row.asset}`, section: "markets", chart: true, description: `${row.symbol}: native reserves held by the minter versus supply on the Internet Computer, reconciled line by line, with in-flight deposits and withdrawals and the minter's cycle health.` }, <ReserveAssetPage row={row} minter={minter ?? null} ledger={ledger ?? null} />);
+});
+
 // ---- labels ---------------------------------------------------------------------------------------------
 
 app.get("/labels", async (c) => {
@@ -577,6 +595,22 @@ api.get("/token/:id/prices", async (c) => {
   return c.json({ unit: "usd", source: "DEX candles", points: rows.map((r) => ({ t: r.ts, o: r.open ?? r.price_usd, h: r.high ?? r.price_usd, l: r.low ?? r.price_usd, c: r.price_usd })) });
 });
 api.get("/pools", async (c) => c.json({ pools: await q.topPools(c.env.DB, 300) }));
+api.get("/reserves", async (c) => c.json({ assets: (await c.env.DB.prepare("SELECT asset, symbol, chain, ts, status, raw_ratio, reconciled_ratio, supply_raw, reserves_raw, native_raw, pending_in_raw, pending_out_raw, verified FROM reserves_latest").all()).results, source: "minter canisters + native chain sources" }));
+api.get("/reserves/:asset/series", async (c) => {
+  const key = c.req.query("range") ?? "7d";
+  const range = RANGES[key] ?? RANGES["7d"]!;
+  const metric = c.req.query("metric") ?? "ratio";
+  const rows = (await c.env.DB.prepare("SELECT ts, supply_raw, reserves_raw, reconciled_ratio FROM reserves_series WHERE asset = ? AND ts >= ? ORDER BY ts").bind(c.req.param("asset"), now() - range).all<{ ts: number; supply_raw: string | null; reserves_raw: string | null; reconciled_ratio: number | null }>()).results;
+  const dec = await c.env.DB.prepare("SELECT t.decimals FROM reserves_latest r JOIN tokens t ON t.id = r.ledger_id WHERE r.asset = ?").bind(c.req.param("asset")).first<{ decimals: number }>();
+  const d = dec?.decimals ?? 8;
+  const u = (raw: string | null) => (raw == null ? null : Number(BigInt(raw)) / 10 ** d);
+  let points: { t: number; v: number }[] = [];
+  if (metric === "ratio") points = rows.flatMap((r) => (r.reconciled_ratio != null ? [{ t: r.ts, v: r.reconciled_ratio * 100 }] : []));
+  else if (metric === "supply") points = rows.flatMap((r) => { const v = u(r.supply_raw); return v != null ? [{ t: r.ts, v }] : []; });
+  else if (metric === "reserves") points = rows.flatMap((r) => { const v = u(r.reserves_raw); return v != null ? [{ t: r.ts, v }] : []; });
+  else if (metric === "flows") for (let i = 1; i < rows.length; i++) { const a = u(rows[i - 1]!.supply_raw); const b = u(rows[i]!.supply_raw); if (a != null && b != null) points.push({ t: rows[i]!.ts, v: b - a }); }
+  return c.json({ unit: metric === "ratio" ? "percent" : "count", source: "ICPWatch reserves series", points }, 200, { "cache-control": "public, max-age=300" });
+});
 api.get("/indexer", async (c) => c.json({ overview: await indexOverview(c.env.DB), failures: await indexFailures(c.env.DB), source: "ICPWatch block index" }));
 api.get("/indexer/reconcile/:ledger", async (c) => c.json(await reconcile(c.env, c.req.param("ledger"))));
 api.get("/token/:id/holders", async (c) => {
@@ -637,6 +671,7 @@ const JOBS = {
   sns: (env: Env) => collectSns(env),
   labels: (env: Env) => collectLabels(env),
   trust: (env: Env) => collectTrust(env, { labels: { labelsFor, isTreasuryOrPool } }),
+  reserves: (env: Env) => collectReserves(env),
   indexer: (env: Env) => indexJob(env),
   // One ledger only, used by the admin route below and local testing. Default 45 s budget.
   "indexer-one": (env: Env, ledger?: string) => indexTick(env, { budgetMs: 45_000, ledgers: ledger ? [ledger] : [], maxReconciles: 1 }).then(({ ledgers, ...s }) => ({ ...s, failed: ledgers.filter((l) => l.error).map((l) => ({ ledger: l.ledger, error: l.error })) })),
@@ -754,6 +789,7 @@ export default {
           const n = await env.DB.prepare("SELECT COUNT(*) n FROM canisters").first<{ n: number }>();
           if (!n?.n) await runJob(env, "discovery");
           await runJob(env, n?.n ? "lifeline" : "lifeline-full");
+          await runJob(env, "reserves");
           break;
         }
         case "*/5 * * * *": await runJob(env, "markets"); await runJob(env, "indexer"); break;

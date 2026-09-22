@@ -207,7 +207,7 @@ export interface Condition {
 }
 
 /** Number of consecutive recovered evaluations before an incident resolves. */
-export const CLEAR_STREAK: Record<AlertType, number> = { low_cycles: 2, frozen: 2, approaching_deletion: 2, burn_anomaly: 3 };
+export const CLEAR_STREAK: Record<string, number> = { low_cycles: 2, frozen: 2, approaching_deletion: 2, burn_anomaly: 3, reserve_deviation: 3, large_mint_burn: 1 };
 
 export interface OpenIncident { id: number; type: AlertType; clearStreak: number }
 
@@ -229,7 +229,7 @@ export function step(type: AlertType, open: OpenIncident | undefined, c: Conditi
   if (c.tripped) return open.clearStreak ? { kind: "streak", id: open.id, clearStreak: 0 } : { kind: "none" };
   if (c.recovered) {
     const next = open.clearStreak + 1;
-    return next >= CLEAR_STREAK[type] ? { kind: "resolve", id: open.id, type, condition: c } : { kind: "streak", id: open.id, clearStreak: next };
+    return next >= (CLEAR_STREAK[type] ?? 2) ? { kind: "resolve", id: open.id, type, condition: c } : { kind: "streak", id: open.id, clearStreak: next };
   }
   return { kind: "none" };
 }

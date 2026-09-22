@@ -25,6 +25,7 @@ function fmtValue(unit: string | undefined, v: number): string {
     if (a === 0) return "$0";
     return `$${v.toFixed(Math.min(12, -Math.floor(Math.log10(a)) + 3))}`;
   }
+  if (unit === "percent") return `${v.toFixed(3)}%`;
   if (unit === "rate") return `${v >= 100 ? v.toFixed(0) : v.toFixed(2)}/s`;
   if (unit === "count") {
     const a = Math.abs(v);
