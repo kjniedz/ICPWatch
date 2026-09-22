@@ -45,6 +45,7 @@ import { SnapshotFormPage, SnapshotPage, SnapshotsIndexPage } from "./pages/snap
 import { LaunchpadPage } from "./pages/launchpad";
 import { ClaimPage, ProfileEditPage, VerifiedProfile } from "./pages/claims";
 import { SmartMoneyPage } from "./pages/smartmoney";
+import { exportAccount } from "./export";
 import { collectSmartMoney, smartFlows, smartWallets } from "./smartmoney";
 import { checkClaims, getClaim, profileByKey, saveProfile, startClaim, verifiedProfile } from "./claims";
 import { collectLaunchpad, listLaunches } from "./launchpad";
@@ -445,6 +446,13 @@ app.post("/token/:id/profile", async (c) => {
   const p = await profileByKey(c.env.DB, t.id, key);
   if (!p) return page(c, { ...claimMeta(t), path: `/token/${t.id}/profile` }, <ClaimPage t={t} claim={null} isSns={t.kind === "sns"} result={r} />);
   return page(c, { ...claimMeta(t), title: `${t.symbol} profile`, path: `/token/${t.id}/profile` }, <ProfileEditPage t={t} p={p} key={key} result={r} />);
+});
+app.get("/account/:id/export.csv", async (c) => {
+  const format = c.req.query("format") === "cointracker" ? "cointracker" : "koinly";
+  const year = Number(c.req.query("year")) || undefined;
+  const r = await exportAccount(c.env, c.req.param("id"), { format, year });
+  if ("error" in r) return c.text(r.error, 400);
+  return c.body(r.csv, 200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="icpwatch-${format}-${year ?? new Date().getUTCFullYear()}-${c.req.param("id").slice(0, 12)}.csv"`, "cache-control": "private, max-age=300", "x-export-rows": String(r.rows), "x-export-skipped": r.skipped.join(",") });
 });
 app.get("/token/:id/links", async (c) => {
   const t = await q.getToken(c.env.DB, c.req.param("id"));

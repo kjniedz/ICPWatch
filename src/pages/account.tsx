@@ -117,6 +117,15 @@ export function AccountPage({ a }: { a: AccountView }) {
         </>
       ) : null}
 
+      <details class="card card-pad" style="margin-bottom:14px">
+        <summary style="cursor:pointer;font-weight:600">Export for Koinly or CoinTracker</summary>
+        <form method="get" action={`/account/${a.input}/export.csv`} style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
+          <select class="input" name="format" aria-label="Format"><option value="koinly">Koinly universal CSV</option><option value="cointracker">CoinTracker CSV</option></select>
+          <select class="input" name="year" aria-label="Year">{[0, 1, 2].map((d) => { const y = new Date().getUTCFullYear() - d; return <option value={String(y)}>{y}</option>; })}</select>
+          <button class="btn btn-primary btn-sm" type="submit">Download</button>
+          <span class="note">ICP plus every ICRC ledger this account has touched, from the ledgers' own index canisters, priced at our hourly candles. A list of transfers, not tax advice: check the rows.</span>
+        </form>
+      </details>
       <div class="sec-head" id="icp-txs"><h2>ICP transactions</h2><Fresh ts={a.icp_txs.fetched_at} source={a.icp_txs.source} staleAfter={120} label="read" /></div>
       <TxTable page={a.icp_txs} pageHref={(s) => `${self}?start=${s}#icp-txs`} />
 
