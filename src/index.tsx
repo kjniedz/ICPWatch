@@ -46,6 +46,8 @@ import { LaunchpadPage } from "./pages/launchpad";
 import { ClaimPage, ProfileEditPage, VerifiedProfile } from "./pages/claims";
 import { SmartMoneyPage } from "./pages/smartmoney";
 import { exportAccount } from "./export";
+import { CalculatorPage, estimate, parseCalc } from "./pages/calculator";
+import { fetchXdrRate } from "./lifesupport/funding";
 import { collectSmartMoney, smartFlows, smartWallets } from "./smartmoney";
 import { checkClaims, getClaim, profileByKey, saveProfile, startClaim, verifiedProfile } from "./claims";
 import { collectLaunchpad, listLaunches } from "./launchpad";
@@ -259,6 +261,20 @@ app.post("/markets/alerts", async (c) => {
 
 // ---- telegram --------------------------------------------------------------------------------------------
 
+app.get("/lifeline/calculator", async (c) => {
+  const input = parseCalc(Object.fromEntries(Object.entries(c.req.query())));
+  const db = c.env.DB;
+  let rate = (await q.kvGet<{ xdrPermyriadPerIcp: number; ts: number }>(db, "cmc:xdr"))?.value ?? null;
+  if (!rate || now() - rate.ts > 3600) {
+    try { rate = await fetchXdrRate(c.env.IC_HOST); await db.prepare("INSERT OR REPLACE INTO kv (key, value, source, fetched_at) VALUES ('cmc:xdr', ?1, 'cmc', ?2)").bind(JSON.stringify(rate), now()).run(); } catch { /* keep stale or null */ }
+  }
+  const [icp, measured, watched] = await Promise.all([
+    q.getMarket(db, ICP_LEDGER), input.canister ? q.getCanister(db, input.canister) : Promise.resolve(null),
+    db.prepare("SELECT id, label FROM canisters WHERE burn_per_day IS NOT NULL ORDER BY burn_per_day DESC LIMIT 200").all<{ id: string; label: string }>().then((r) => r.results),
+  ]);
+  return page(c, { title: "Cycles cost calculator: what a canister costs to run", path: "/lifeline/calculator", section: "lifeline", description: "Estimate Internet Computer canister costs from the fee table, or use the burn ICPWatch measured on a live canister. Cycles, ICP at the live XDR rate, and USD, per day, month, and year." },
+    <CalculatorPage input={input} lines={estimate(input)} measured={measured ?? null} rate={rate} icpUsd={icp?.price_usd ?? null} canisters={watched} />);
+});
 app.get("/telegram", (c) => page(c, { title: "ICPWatch Telegram bot", path: "/telegram", section: "lifeline", description: "Prices, canister health, SNS treasuries, and alerts for the Internet Computer in Telegram, with group feeds, rate limits, and quiet hours." }, <TelegramPage live={!!c.env.TELEGRAM_BOT_TOKEN} botName={c.env.TELEGRAM_BOT_NAME ?? null} />));
 app.post("/telegram/webhook/:path", async (c) => {
   if (!c.env.TELEGRAM_BOT_TOKEN || c.req.param("path") !== (await webhookPath(c.env.TELEGRAM_BOT_TOKEN))) return c.text("not found", 404);
@@ -1143,7 +1159,7 @@ app.get("/sitemap.xml", async (c) => {
   // [path, lastmod, priority]: live pages refresh daily so crawlers keep coming back; content pages rarely change.
   const urls: [string, string | null, number][] = [
     ["/", today, 1], ["/lifeline", today, 0.9], ["/markets", today, 0.9], ["/network", today, 0.9], ["/reserves", today, 0.8], ["/sns", today, 0.8], ["/sns/proposals", today, 0.7], ["/sns/unlocks", today, 0.7], ["/sns/compare", null, 0.5], ["/labels", today, 0.7], ["/trust-score", null, 0.7],
-    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/markets/launchpad", today, 0.7], ["/markets/smart-money", today, 0.7], ["/snapshots", today, 0.5], ["/telegram", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
+    ["/lifeline/life-support", today, 0.7], ["/lifeline/incidents", today, 0.6], ["/lifeline/alerts", null, 0.6], ["/markets/pools", today, 0.7], ["/markets/alerts", null, 0.6], ["/markets/launchpad", today, 0.7], ["/markets/smart-money", today, 0.7], ["/snapshots", today, 0.5], ["/telegram", null, 0.6], ["/lifeline/calculator", null, 0.6], ["/markets/new", today, 0.7], ["/markets/whales", today, 0.6], ["/markets/screener", today, 0.6],
     ["/network/subnets", today, 0.7], ["/network/proposals", today, 0.7], ["/status", today, 0.3], ...content.map((x) => [x[0], null, 0.5] as [string, null, number]),
     ...tokens.results.map((t) => [`/token/${t.id}`, today, 0.8] as [string, string, number]), ...reserves.results.map((r) => [`/reserves/${r.asset}`, today, 0.7] as [string, string, number]),
     ...canisters.results.map((x) => [`/canister/${x.id}`, day(x.measured_at), 0.5] as [string, string | null, number]), ...subnets.results.map((s) => [`/subnet/${s.id}`, today, 0.5] as [string, string, number]),
